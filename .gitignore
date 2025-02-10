@@ -1,0 +1,8 @@
+# Compiled executables
+fastq_sorter
+seq_merge
+
+# OS-specific files
+.DS_Store
+.vscode/
+*.o
