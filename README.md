@@ -43,13 +43,6 @@ To test your installation:
 ./bc_merger
 ```
 
-## Usage
-Once installed, BCAR can be invoked as a command-line script. The typical usage is:
-
-```bash
-bcar [-h] --fwd FWD_FASTQS [FWD_FASTQS ...] --rev REV_FASTQS [REV_FASTQS ...] [--out1 OUTPUT_FASTQ_FWD] [--out2 OUTPUT_FASTQ_REV] [--BC-start BC_START] [--BC-len BC_LEN] [--min-qscore MIN_QSCORE] [--min-count MIN_COUNT] [--align]
-```
-
 ## Contributing
 Contributions are welcome! Feel free to open issues or submit pull requests on the GitHub repository.
 

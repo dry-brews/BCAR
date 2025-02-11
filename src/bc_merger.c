@@ -94,8 +94,6 @@ double compare_positions(const Position* a, const Position* b);
 double compare_seqs(const SeqArray* a, const SeqArray* b);
 SeqArray build_unaligned_consensus(SeqArray* sequences, int count);
 char* align_arrays(const SeqArray* query, const SeqArray* ref);
-Position add_match(const Position* pos1, const Position* pos2);
-Position add_insertion(const Position* pos1, const Position* pos2);
 SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2);
 void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out);
 // create and destroy objects
@@ -707,16 +705,6 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
     return traceback;
 }
 
-Position add_insertion(const Position* pos1, const Position* pos2) {
-    Position result;
-    memcpy(result.scores, pos2->scores, 4*sizeof(int)); // Copy ACGT
-    result.scores[4] = 0;
-    for(int i=0; i<4; i++) {
-        result.scores[4] += pos1->scores[i]; // Sum reference's bases for gap support
-    }
-    return result;
-}
-
 SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
     // seq1 = reference = consensus
     // seq2 = query = individual read
@@ -750,7 +738,7 @@ SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
                 pos1++;
                 break;
             case 3:  // gap in reference / consensus (seq1)
-                memcpy(merged.positions[i].scores, p2.scores, 5*sizeof(int)); // Copy ACGT from query
+                memcpy(merged.positions[i].scores, p2.scores, 5*sizeof(int)); // Copy ACGT- from query
                 // merged.positions[i].scores[4] = 0;
                 for(int j=0; j<5; j++) {
                     merged.positions[i].scores[4] += p1.scores[j]; // Sum ref's bases for gap support
@@ -807,7 +795,7 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out) {
         
         if(sum == 0) {
             (*qual_out)[out_pos] = '!';  // Q=0
-            (*seq_out)[out_pos] = 'N';  // N for no coverage
+            (*seq_out)[out_pos] = 'N';   // N for no coverage
         } else {
             double max_score = max_val;
             double other_sum = sum - max_score;
