@@ -1,32 +1,38 @@
 # Makefile for BCAR2 project
 
+# Check if we're in the conda environment
+ifndef CONDA_PREFIX
+$(error Please run 'conda activate bcar2-env' before using make)
+endif
+
 # Compiler settings
-CXX = g++
-CC = gcc
-CXXFLAGS = -O3 --std=c++17 -w
-CFLAGS = -O3 --std=gnu99 -w
+CXX = $(CONDA_PREFIX)/bin/g++
+CC = $(CONDA_PREFIX)/bin/gcc
+CXXFLAGS = -O3 -w -I$(CONDA_PREFIX)/include
+CFLAGS = -O3 --std=gnu99 -w -I$(CONDA_PREFIX)/include
+LDFLAGS = -L$(CONDA_PREFIX)/lib
 
 # Source directory
 SRC_DIR = src
 
 # Output executables
 FASTQ_SORTER = fastq_sorter
-BC_MERGER = bc_merge
+SEQ_MERGER = seq_merge
 
 # Default target
-all: $(FASTQ_SORTER) $(BC_MERGER)
+all: $(FASTQ_SORTER) $(SEQ_MERGER)
 
 # Rule for fastq_sorter
 $(FASTQ_SORTER): $(SRC_DIR)/fastq_sorter.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ -lz
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< -o $@ -lz
 
 # Rule for seq_merge (bc_merger)
-$(BC_MERGER): $(SRC_DIR)/bc_merger.c
-	$(CC) $(CFLAGS) $< -o $@ -lm -pthread
+$(SEQ_MERGER): $(SRC_DIR)/bc_merger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@ -lm -pthread
 
 # Clean target
 clean:
-	rm -f $(FASTQ_SORTER) $(BC_MERGER)
+	rm -f $(FASTQ_SORTER) $(SEQ_MERGER)
 
 # Phony targets
 .PHONY: all clean

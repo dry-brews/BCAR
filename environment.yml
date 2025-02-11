@@ -1,0 +1,10 @@
+name: bcar2-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - gxx=11.3.0  # Modern but stable version of g++
+  - gcc=11.3.0  # Matching gcc version
+  - make
+  - zlib        # Runtime library
+  - pthread-stubs
