@@ -34,7 +34,8 @@ git clone https://github.com/dry-brews/BCAR2.git
 BCAR requires simple compilation using a Makefile. Depending on your system architecture, you may need to compile independently.
 ```bash
 cd BCAR2
-make
+chmod +x install.sh
+./install.sh
 ```
 
 To test your installation:
@@ -42,6 +43,27 @@ To test your installation:
 ./fastq_sorter
 ./bc_merger
 ```
+
+### 3. Usage
+Usage: ./fastq_sorter [options]
+Options:
+  --reads=<input1.fastq,input2.fastq,...> #Note comma-joining, use = not space
+  --pairs=<pairs1.fastq,pairs2.fastq,...> #Note comma-joining, use = not space
+  --bc-start=int   Barcode start position (Zero-indexed, default: 0)
+  --bc-len=int     Barcode length (default: 18)
+  --out1=file      Output file for sorted read 1
+  --out2=file      Output file for sorted read 2
+  --temp=dir       Temporary directory for storing chunk files (recommend .)
+
+Usage: ./seq_merge [options]
+Options:
+  --read1=file     Input FASTQ file 1
+  --read2=file     Input FASTQ file 2
+  --bc-start=int   Barcode start position (Zero-indexed, default: 0)
+  --bc-len=int     Barcode length (default: 18)
+  --out1=file      Output file for consensus read 1
+  --out2=file      Output file for consensus read 2
+  --threads=int    Number of threads (default: 1)
 
 ## Contributing
 Contributions are welcome! Feel free to open issues or submit pull requests on the GitHub repository.
