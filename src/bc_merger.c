@@ -96,7 +96,7 @@ SeqArray build_unaligned_consensus(SeqArray* sequences, int count);
 char* align_arrays(const SeqArray* query, const SeqArray* ref);
 SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2);
 void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out);
-// create and destroy objects
+// create and free objects
 SeqArray create_seq_array(int length);
 Matrix create_matrix(int rows, int cols);
 void free_matrix(Matrix mat);
@@ -108,8 +108,8 @@ void print_usage(const char* program_name);
 
 int main(int argc, char *argv[]) {
     // Default values
-    const char *read1_file = NULL;
-    const char *read2_file = NULL;
+    const char *in1_file = NULL;
+    const char *in2_file = NULL;
     const char *out1_file = "seq_merge_out1.fastq";
     const char *out2_file = "seq_merge_out2.fastq";
     int bc_start = 0;
@@ -132,8 +132,8 @@ int main(int argc, char *argv[]) {
     int c;
     while ((c = getopt_long_only(argc, argv, "", long_options, &option_index)) != -1) {
         switch (c) {
-            case 'a': read1_file = optarg; break;
-            case 'b': read2_file = optarg; break;
+            case 'a': in1_file = optarg; break;
+            case 'b': in2_file = optarg; break;
             case 's': bc_start = atoi(optarg); break;
             case 'l': bc_len = atoi(optarg); break;
             case '1': out1_file = optarg; break;
@@ -144,7 +144,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Validate arguments
-    if (!read1_file || !read2_file || !out1_file || !out2_file) {
+    if (!in1_file || !in2_file) {
         fprintf(stderr, "Error: Missing required arguments\n");
         print_usage(argv[0]);
     }
@@ -155,8 +155,8 @@ int main(int argc, char *argv[]) {
     }
 
     // Initialize input files
-    FILE* fwd_file = fopen(read1_file, "r");
-    FILE* rev_file = fopen(read2_file, "r");
+    FILE* fwd_file = fopen(in1_file, "r");
+    FILE* rev_file = fopen(in2_file, "r");
     if (!fwd_file || !rev_file) {
         perror("Error opening input files");
         exit(EXIT_FAILURE);
@@ -731,7 +731,6 @@ SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
                 break;
             case 2:  // gap in query / individual read (seq2)
                 memcpy(merged.positions[i].scores, p1.scores, 5*sizeof(int)); // Copy ACGT- from reference
-                // merged.positions[i].scores[4] = 0;
                 for(int j=0; j<5; j++) {
                     merged.positions[i].scores[4] += p2.scores[j]; // Sum query's bases for gap support
                 }
@@ -739,7 +738,6 @@ SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
                 break;
             case 3:  // gap in reference / consensus (seq1)
                 memcpy(merged.positions[i].scores, p2.scores, 5*sizeof(int)); // Copy ACGT- from query
-                // merged.positions[i].scores[4] = 0;
                 for(int j=0; j<5; j++) {
                     merged.positions[i].scores[4] += p1.scores[j]; // Sum ref's bases for gap support
                 }
