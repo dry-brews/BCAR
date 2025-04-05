@@ -10,7 +10,7 @@
 #define MAX_LINE_LEN 1024
 #define BASES "ACGT-"
 #define MAX_CONS_LEN 1024 * 4
-#define GAP_SCORE -3.0
+#define DEFAULT_GAP_SCORE -3.0
 #define VECTOR_LENGTH 5
 #define q_correct -0.004575749 // = 1/10 * log10(0.9)
 #define q_error -0.1 // = 1/10 * log10(0.1)
@@ -80,6 +80,8 @@ const int basemap[256] = { ['A']=0, ['C']=1, ['G']=2, ['T']=3, ['-']=4, ['N']=4 
 const int q_adj[41] = { // adjusted quality score mapping
     0, -6, -2, 0, 2, 4, 6, 7, 8, 10, 11, 12, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 28, 29, 30, 31, 32, 33, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46
 };
+double gap_open = DEFAULT_GAP_SCORE;
+double gap_extend = DEFAULT_GAP_SCORE;
 
 // Function prototypes
 // organize workers into a queue
@@ -122,6 +124,8 @@ int main(int argc, char *argv[]) {
         {"read2", required_argument, 0, 'b'},
         {"bc-start", required_argument, 0, 's'},
         {"bc-len", required_argument, 0, 'l'},
+        {"gap-open", required_argument, 0, 'g'},
+        {"gap-extend", required_argument, 0, 'e'},
         {"out1", required_argument, 0, '1'},
         {"out2", required_argument, 0, '2'},
         {"threads", required_argument, 0, 't'},
@@ -136,6 +140,8 @@ int main(int argc, char *argv[]) {
             case 'b': in2_file = optarg; break;
             case 's': bc_start = atoi(optarg); break;
             case 'l': bc_len = atoi(optarg); break;
+            case 'g': gap_open = atof(optarg); break;
+            case 'e': gap_extend = atof(optarg); break;
             case '1': out1_file = optarg; break;
             case '2': out2_file = optarg; break;
             case 't': num_threads = atoi(optarg); break;
@@ -616,9 +622,13 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
     int xlen = ref->length + 1;   // x = reference = consensus
     
     // Create matrices
-    Matrix score = create_matrix(ylen, xlen);
-    Matrix trace = create_matrix(ylen, xlen);
-    Matrix match = create_matrix(query->length, ref->length);
+    Matrix score = create_matrix(ylen, xlen);     // Main score matrix
+    Matrix trace = create_matrix(ylen, xlen);     // Traceback matrix
+    Matrix match = create_matrix(query->length, ref->length); // Match scores
+    
+    // New matrices for affine gap penalties
+    Matrix gap_x = create_matrix(ylen, xlen);     // Gap in x direction (deletion)
+    Matrix gap_y = create_matrix(ylen, xlen);     // Gap in y direction (insertion)
     
     // Precompute match scores
     for (int x = 0; x < ref->length; x++) {
@@ -627,30 +637,72 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
         }
     }
     
-    // Initialize first row and column
-    for (int x = 0; x < xlen; x++) {
-        score.data[0][x] = GAP_SCORE * x;
+    // Initialize first row and column with affine gap penalties
+    score.data[0][0] = 0;
+    gap_x.data[0][0] = gap_y.data[0][0] = -INFINITY; // Can't start with a gap extension
+    
+    // Initialize first column (gaps in reference)
+    for (int y = 1; y < ylen; y++) {
+        score.data[y][0] = -INFINITY;  // Can't reach these cells via match
+        gap_x.data[y][0] = -INFINITY;  // Can't have deletion in first column
+        
+        // Gap in y-direction (insertion)
+        if (y == 1) {
+            gap_y.data[y][0] = gap_open;  // First gap: open penalty
+        } else {
+            gap_y.data[y][0] = gap_y.data[y-1][0] + gap_extend;  // Extend penalty
+        }
+        
+        // Overall score comes from gap_y for first column
+        score.data[y][0] = gap_y.data[y][0];
+        trace.data[y][0] = 3;  // Insertion (gap in reference)
     }
-    for (int y = 0; y < ylen; y++) {
-        score.data[y][0] = GAP_SCORE * y;
+    
+    // Initialize first row (gaps in query)
+    for (int x = 1; x < xlen; x++) {
+        score.data[0][x] = -INFINITY;  // Can't reach these cells via match
+        gap_y.data[0][x] = -INFINITY;  // Can't have insertion in first row
+        
+        // Gap in x-direction (deletion)
+        if (x == 1) {
+            gap_x.data[0][x] = gap_open;  // First gap: open penalty
+        } else {
+            gap_x.data[0][x] = gap_x.data[0][x-1] + gap_extend;  // Extend penalty
+        }
+        
+        // Overall score comes from gap_x for first row
+        score.data[0][x] = gap_x.data[0][x];
+        trace.data[0][x] = 2;  // Deletion (gap in query)
     }
     
     // Fill score and trace matrices
     for (int y = 1; y < ylen; y++) {
         for (int x = 1; x < xlen; x++) {
+            // Calculate score for match/mismatch
             double diag = score.data[y-1][x-1] + match.data[y-1][x-1];
-            double up = score.data[y-1][x] + GAP_SCORE;
-            double left = score.data[y][x-1] + GAP_SCORE;
             
-            if (diag > up & diag > left) {
+            // Calculate score for gap in x (deletion)
+            double open_x = score.data[y][x-1] + gap_open;       // Open new gap
+            double extend_x = gap_x.data[y][x-1] + gap_extend;   // Extend existing gap
+            gap_x.data[y][x] = (open_x > extend_x) ? open_x : extend_x;
+            
+            // Calculate score for gap in y (insertion)
+            double open_y = score.data[y-1][x] + gap_open;       // Open new gap
+            double extend_y = gap_y.data[y-1][x] + gap_extend;   // Extend existing gap
+            gap_y.data[y][x] = (open_y > extend_y) ? open_y : extend_y;
+            
+            // Find the best score among the three options
+            if (diag >= gap_x.data[y][x] && diag >= gap_y.data[y][x]) {
                 score.data[y][x] = diag;
-                trace.data[y][x] = 1;  // Match
-            } else if (left > up) {
-                score.data[y][x] = left;
-                trace.data[y][x] = 2;  // Deletion (gap in query / individual read)
+                trace.data[y][x] = 1;  // Match/mismatch
+            } else if (gap_x.data[y][x] >= gap_y.data[y][x]) {
+                score.data[y][x] = gap_x.data[y][x];
+                // Record whether this is an open or extend gap
+                trace.data[y][x] = (open_x > extend_x) ? 2 : 4;  // 2=open deletion, 4=extend deletion
             } else {
-                score.data[y][x] = up;
-                trace.data[y][x] = 3;  // Insertion (gap in reference / consensus)
+                score.data[y][x] = gap_y.data[y][x];
+                // Record whether this is an open or extend gap
+                trace.data[y][x] = (open_y > extend_y) ? 3 : 5;  // 3=open insertion, 5=extend insertion
             }
         }
     }
@@ -658,7 +710,15 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
     // Traceback
     int max_trace_len = query->length + ref->length + 1;
     char* traceback = malloc(max_trace_len * sizeof(char));
-    if (!traceback) return NULL;
+    if (!traceback) {
+        free_matrix(score);
+        free_matrix(trace);
+        free_matrix(match);
+        free_matrix(gap_x);
+        free_matrix(gap_y);
+        return NULL;
+    }
+    
     int idx = 0;
     int x = xlen - 1;
     int y = ylen - 1;
@@ -669,23 +729,24 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
         
         int trace_val = trace.data[y][x];
         traceback[idx++] = trace_val;
-        if (trace_val == 1) {  // Match
+        
+        if (trace_val == 1) {        // Match/mismatch
             x--;
             y--;
-        } else if (trace_val == 2) {  // Left / deletion in query
+        } else if (trace_val == 2 || trace_val == 4) {  // Deletion (gap in query)
             x--;
-        } else {  // Up / deletion in reference
+        } else {                      // Insertion (gap in reference)
             y--;
         }
     }
     
     // Handle remaining gaps
     while (x > 0) {
-        traceback[idx++] = 2;
+        traceback[idx++] = 2;  // Use open gap code for simplicity in remaining sequence
         x--;
     }
     while (y > 0) {
-        traceback[idx++] = 3;
+        traceback[idx++] = 3;  // Use open gap code for simplicity in remaining sequence
         y--;
     }
     
@@ -701,6 +762,8 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
     free_matrix(score);
     free_matrix(trace);
     free_matrix(match);
+    free_matrix(gap_x);
+    free_matrix(gap_y);
     
     return traceback;
 }
@@ -815,10 +878,28 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out) {
         out_pos++;
     }
     
-    // Terminate strings and shrink to actual size
+    // Terminate strings initially
     (*seq_out)[out_pos] = '\0';
     (*qual_out)[out_pos] = '\0';
     
+    // Check if read needs to be trimmed from 3' end
+    if(out_pos > 0 && ((*qual_out)[out_pos-1] - 33) <= 5) {
+        // Trim iteratively from the end until a good base is found
+        int trim_pos = out_pos - 1;
+        while(trim_pos >= 0) {
+            int qual = (*qual_out)[trim_pos] - 33;
+            if(qual > 5) break;
+            trim_pos--;
+        }
+        
+        // Update length after trimming
+        trim_pos++;  // Move forward one to include the last good base
+        (*seq_out)[trim_pos] = '\0';
+        (*qual_out)[trim_pos] = '\0';
+        out_pos = trim_pos;
+    }
+    
+    // Reallocate to trimmed size
     *seq_out = realloc(*seq_out, out_pos + 1);
     *qual_out = realloc(*qual_out, out_pos + 1);
 }
@@ -826,13 +907,15 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out) {
 void print_usage(const char* program_name) {
     fprintf(stderr, "Usage: %s [options]\n", program_name);
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  --read1=file     Input FASTQ file 1\n");
-    fprintf(stderr, "  --read2=file     Input FASTQ file 2\n");
-    fprintf(stderr, "  --bc-start=int   Barcode start position (Zero-indexed, default: 0)\n");
-    fprintf(stderr, "  --bc-len=int     Barcode length (default: 18)\n");
-    fprintf(stderr, "  --out1=file      Output file for consensus read 1\n");
-    fprintf(stderr, "  --out2=file      Output file for consensus read 2\n");
-    fprintf(stderr, "  --threads=int    Number of threads (default: 1)\n");
+    fprintf(stderr, "  --read1=file       Input FASTQ file 1\n");
+    fprintf(stderr, "  --read2=file       Input FASTQ file 2\n");
+    fprintf(stderr, "  --bc-start=int     Barcode start position (Zero-indexed, default: 0)\n");
+    fprintf(stderr, "  --bc-len=int       Barcode length (default: 18)\n");
+    fprintf(stderr, "  --gap-open=float   Gap open penalty (default: 3.0)\n");
+    fprintf(stderr, "  --gap-extend=float Gap extend penalty (default: 3.0)\n");
+    fprintf(stderr, "  --out1=file        Output file for consensus read 1\n");
+    fprintf(stderr, "  --out2=file        Output file for consensus read 2\n");
+    fprintf(stderr, "  --threads=int      Number of threads (default: 1)\n");
     exit(EXIT_FAILURE);
 }
 
