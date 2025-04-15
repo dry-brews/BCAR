@@ -20,14 +20,14 @@ FASTQ_SORTER = fastq_sorter
 SEQ_MERGER = seq_merge
 
 # Default target
-all: $(FASTQ_SORTER) $(SEQ_MERGER)
+all: $(FASTQ_SORTER) $(SEQ_MERGER) $(SEQ_MERGER_DEBUG)
 
 # Rule for fastq_sorter
 $(FASTQ_SORTER): $(SRC_DIR)/fastq_sorter.cpp
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< -o $@ -lz
 
 # Rule for seq_merge (bc_merger)
-$(SEQ_MERGER): $(SRC_DIR)/bc_merger.c
+$(SEQ_MERGER): $(SRC_DIR)/bc_merger_v04.c
 	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@ -lm -pthread
 
 # Clean target

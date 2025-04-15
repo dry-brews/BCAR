@@ -15,7 +15,8 @@ fi
 # Create/update conda environment
 echo "Setting up conda environment..."
 if conda env list | grep -q "bcar2-env"; then
-    conda env update -f environment.yml
+    echo "Environment exists..."
+    #conda env update -f environment.yml
 else
     conda env create -f environment.yml
 fi

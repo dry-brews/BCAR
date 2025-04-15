@@ -15,7 +15,6 @@
 #define q_correct -0.004575749 // = 1/10 * log10(0.9)
 #define q_error -0.1 // = 1/10 * log10(0.1)
 
-// Structures
 // Structure for barcode group (all reads associated with one barcode)
 typedef struct {
     char bc[MAX_BARCODE_LEN];
@@ -73,7 +72,6 @@ typedef struct {
     WorkQueue* queue;
     OutputFiles* output;
     int thread_id;
-    bool paired_end_mode;  // Add this line
 } WorkerArgs;
 
 // Global variables
@@ -92,8 +90,7 @@ void queue_push(WorkQueue* queue, BarcodeGroup* group);
 BarcodeGroup* queue_pop(WorkQueue* queue);
 void* worker_thread(void* arg);
 // process barcode group
-void process_barcode_paired(BarcodeGroup* group, char** fwd_entry, char** rev_entry);
-void process_barcode_single(BarcodeGroup* group, char** fwd_entry);
+void process_barcode(BarcodeGroup* group, char** fwd_entry, char** rev_entry);
 SeqArray seq_to_array(const char* seq, const char* qual, int length);
 double compare_positions(const Position* a, const Position* b);
 double compare_seqs(const SeqArray* a, const SeqArray* b);
@@ -107,25 +104,9 @@ Matrix create_matrix(int rows, int cols);
 void free_matrix(Matrix mat);
 void free_seq_array(SeqArray* arr);
 void free_barcode_group(BarcodeGroup* group);
-void cleanup_on_error(FILE* fwd_file, FILE* rev_file, OutputFiles* output, pthread_t* threads, WorkerArgs* thread_args);
 // other helper functions
 double log10addexp(double A, double B);
 void print_usage(const char* program_name);
-
-void print_usage(const char* program_name) {
-    fprintf(stderr, "Usage: %s [options]\n", program_name);
-    fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  --read1=file       Input FASTQ file 1 (required)\n");
-    fprintf(stderr, "  --read2=file       Input FASTQ file 2 (optional, enables paired-end mode)\n");
-    fprintf(stderr, "  --bc-start=int     Barcode start position (Zero-indexed, default: 0)\n");
-    fprintf(stderr, "  --bc-len=int       Barcode length (default: 18)\n");
-    fprintf(stderr, "  --gap-open=float   Gap open penalty (default: -3.0)\n");
-    fprintf(stderr, "  --gap-extend=float Gap extend penalty (default: -3.0)\n");
-    fprintf(stderr, "  --out1=file        Output file for consensus read 1\n");
-    fprintf(stderr, "  --out2=file        Output file for consensus read 2\n");
-    fprintf(stderr, "  --threads=int      Number of threads (default: 1)\n");
-    exit(EXIT_FAILURE);
-}
 
 int main(int argc, char *argv[]) {
     // Default values
@@ -136,7 +117,6 @@ int main(int argc, char *argv[]) {
     int bc_start = 0;
     int bc_len = 18;
     int num_threads = 1;
-    bool paired_end_mode = false;
 
     // Command line options
     static struct option long_options[] = {
@@ -157,7 +137,7 @@ int main(int argc, char *argv[]) {
     while ((c = getopt_long_only(argc, argv, "", long_options, &option_index)) != -1) {
         switch (c) {
             case 'a': in1_file = optarg; break;
-            case 'b': in2_file = optarg; paired_end_mode = true; break;
+            case 'b': in2_file = optarg; break;
             case 's': bc_start = atoi(optarg); break;
             case 'l': bc_len = atoi(optarg); break;
             case 'g': gap_open = atof(optarg); break;
@@ -170,13 +150,8 @@ int main(int argc, char *argv[]) {
     }
 
     // Validate arguments
-    if (!in1_file) {
-        fprintf(stderr, "Error: Read 1 file is required\n");
-        print_usage(argv[0]);
-    }
-
-    if (paired_end_mode && !in2_file) {
-        fprintf(stderr, "Error: Entered paired-end mode, but read2 file was not read\n");
+    if (!in1_file || !in2_file) {
+        fprintf(stderr, "Error: Missing required arguments\n");
         print_usage(argv[0]);
     }
 
@@ -185,35 +160,21 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // Print run information
-    fprintf(stderr, "\nInitializing sequence processing...\n");
-    fprintf(stderr, "Mode: %s\n", paired_end_mode ? "Paired-end" : "Single-end");
-    fprintf(stderr, "Threads: %d\n", num_threads);
-    fprintf(stderr, "Input file(s):\n  Read 1: %s\n", in1_file);
-    if (paired_end_mode) {
-        fprintf(stderr, "  Read 2: %s\n", in2_file);
-    }
-    fprintf(stderr, "Output file(s):\n  Read 1: %s\n", out1_file);
-    if (paired_end_mode) {
-        fprintf(stderr, "  Read 2: %s\n", out2_file);
-    }
-    fprintf(stderr, "\n");
-
     // Initialize input files
     FILE* fwd_file = fopen(in1_file, "r");
-    FILE* rev_file = paired_end_mode ? fopen(in2_file, "r") : NULL;
-    if (!fwd_file || (paired_end_mode && !rev_file)) {
+    FILE* rev_file = fopen(in2_file, "r");
+    if (!fwd_file || !rev_file) {
         perror("Error opening input files");
-        cleanup_on_error(fwd_file, rev_file, &output, threads, thread_args);
+        exit(EXIT_FAILURE);
     }
 
     // Initialize output files and mutex
     OutputFiles output;
     output.fwd_out = fopen(out1_file, "w");
-    output.rev_out = paired_end_mode ? fopen(out2_file, "w") : NULL;
-    if (!output.fwd_out || (paired_end_mode && !output.rev_out)) {
+    output.rev_out = fopen(out2_file, "w");
+    if (!output.fwd_out || !output.rev_out) {
         perror("Error opening output files");
-        cleanup_on_error(fwd_file, rev_file, &output, threads, thread_args);
+        exit(EXIT_FAILURE);
     }
     pthread_mutex_init(&output.mutex, NULL);
 
@@ -229,7 +190,6 @@ int main(int argc, char *argv[]) {
         thread_args[i].queue = &work_queue;
         thread_args[i].output = &output;
         thread_args[i].thread_id = i;
-        thread_args[i].paired_end_mode = paired_end_mode;
         pthread_create(&threads[i], NULL, worker_thread, &thread_args[i]);
     }
 
@@ -239,17 +199,9 @@ int main(int argc, char *argv[]) {
     char line_rev[MAX_LINE_LEN];
 
     while (1) {
-        // Read all four lines or break if any read fails
-        if (!fgets(line_fwd, MAX_LINE_LEN, fwd_file) ||                              // Header
-            !fgets(line_fwd, MAX_LINE_LEN, fwd_file) ||                              // Sequence
-            !fgets(line_fwd, MAX_LINE_LEN, fwd_file) ||                              // Plus line
-            !fgets(line_fwd, MAX_LINE_LEN, fwd_file) ||                              // Quality
-            (paired_end_mode && (
-                !fgets(line_rev, MAX_LINE_LEN, rev_file) ||                          // Header
-                !fgets(line_rev, MAX_LINE_LEN, rev_file) ||                          // Sequence
-                !fgets(line_rev, MAX_LINE_LEN, rev_file) ||                          // Plus line
-                !fgets(line_rev, MAX_LINE_LEN, rev_file)                             // Quality
-            ))) {
+        // Check for end of file and read headers
+        if (!fgets(line_fwd, MAX_LINE_LEN, fwd_file) || 
+            !fgets(line_rev, MAX_LINE_LEN, rev_file)) {
             if (current_group) {
                 queue_push(&work_queue, current_group);
             }
@@ -257,37 +209,23 @@ int main(int argc, char *argv[]) {
         }
 
         // Read sequences
-        if (!fgets(line_fwd, MAX_LINE_LEN, fwd_file)) break;
+        (void)fgets(line_fwd, MAX_LINE_LEN, fwd_file);
+        (void)fgets(line_rev, MAX_LINE_LEN, rev_file);
         char* fwd_seq = strndup(line_fwd, strcspn(line_fwd, "\n"));
-        char* rev_seq = NULL;
-        
-        if (paired_end_mode) {
-            if (!fgets(line_rev, MAX_LINE_LEN, rev_file)) break;
-            rev_seq = strndup(line_rev, strcspn(line_rev, "\n"));
-        }
+        char* rev_seq = strndup(line_rev, strcspn(line_rev, "\n"));
 
         // Skip '+' lines
-        if (!fgets(line_fwd, MAX_LINE_LEN, fwd_file)) break;
-        if (paired_end_mode) {
-            if (!fgets(line_rev, MAX_LINE_LEN, rev_file)) break;
-        }
+        (void)fgets(line_fwd, MAX_LINE_LEN, fwd_file);
+        (void)fgets(line_rev, MAX_LINE_LEN, rev_file);
 
         // Read qualities
-        if (!fgets(line_fwd, MAX_LINE_LEN, fwd_file)) break;
+        fgets(line_fwd, MAX_LINE_LEN, fwd_file);
+        fgets(line_rev, MAX_LINE_LEN, rev_file);
         char* fwd_qual = strndup(line_fwd, strcspn(line_fwd, "\n"));
-        char* rev_qual = NULL;
-        
-        if (paired_end_mode) {
-            if (!fgets(line_rev, MAX_LINE_LEN, rev_file)) break;
-            rev_qual = strndup(line_rev, strcspn(line_rev, "\n"));
-        }
+        char* rev_qual = strndup(line_rev, strcspn(line_rev, "\n"));
 
-        // Extract barcode with bounds checking
+        // Extract barcode
         char bc[MAX_BARCODE_LEN];
-        if (bc_start + bc_len >= strlen(fwd_seq)) {
-            fprintf(stderr, "Error: Barcode position exceeds sequence length\n");
-            exit(EXIT_FAILURE);
-        }
         strncpy(bc, fwd_seq + bc_start, bc_len);
         bc[bc_len] = '\0';
 
@@ -297,14 +235,9 @@ int main(int argc, char *argv[]) {
             strcpy(current_group->bc, bc);
             current_group->count = 0;
             current_group->fwd_reads = malloc(sizeof(char*));
+            current_group->rev_reads = malloc(sizeof(char*));
             current_group->fwd_quals = malloc(sizeof(char*));
-            if (paired_end_mode) {
-                current_group->rev_reads = malloc(sizeof(char*));
-                current_group->rev_quals = malloc(sizeof(char*));
-            } else {
-                current_group->rev_reads = NULL;
-                current_group->rev_quals = NULL;
-            }
+            current_group->rev_quals = malloc(sizeof(char*));
         }
 
         if (strcmp(current_group->bc, bc) != 0) {
@@ -314,35 +247,25 @@ int main(int argc, char *argv[]) {
             strcpy(current_group->bc, bc);
             current_group->count = 0;
             current_group->fwd_reads = malloc(sizeof(char*));
+            current_group->rev_reads = malloc(sizeof(char*));
             current_group->fwd_quals = malloc(sizeof(char*));
-            if (paired_end_mode) {
-                current_group->rev_reads = malloc(sizeof(char*));
-                current_group->rev_quals = malloc(sizeof(char*));
-            } else {
-                current_group->rev_reads = NULL;
-                current_group->rev_quals = NULL;
-            }
+            current_group->rev_quals = malloc(sizeof(char*));
         }
 
         // Add to group
         current_group->fwd_reads = realloc(current_group->fwd_reads, 
             sizeof(char*) * (current_group->count + 1));
+        current_group->rev_reads = realloc(current_group->rev_reads, 
+            sizeof(char*) * (current_group->count + 1));
         current_group->fwd_quals = realloc(current_group->fwd_quals, 
             sizeof(char*) * (current_group->count + 1));
-        
-        if (paired_end_mode) {
-            current_group->rev_reads = realloc(current_group->rev_reads, 
-                sizeof(char*) * (current_group->count + 1));
-            current_group->rev_quals = realloc(current_group->rev_quals, 
-                sizeof(char*) * (current_group->count + 1));
-        }
+        current_group->rev_quals = realloc(current_group->rev_quals, 
+            sizeof(char*) * (current_group->count + 1));
 
         current_group->fwd_reads[current_group->count] = fwd_seq;
+        current_group->rev_reads[current_group->count] = rev_seq;
         current_group->fwd_quals[current_group->count] = fwd_qual;
-        if (paired_end_mode) {
-            current_group->rev_reads[current_group->count] = rev_seq;
-            current_group->rev_quals[current_group->count] = rev_qual;
-        }
+        current_group->rev_quals[current_group->count] = rev_qual;
         current_group->count++;
     }
 
@@ -367,14 +290,14 @@ int main(int argc, char *argv[]) {
     free(thread_args);
     
     fclose(fwd_file);
-    if (paired_end_mode) fclose(rev_file);
+    fclose(rev_file);
     fclose(output.fwd_out);
-    if (paired_end_mode) fclose(output.rev_out);
+    fclose(output.rev_out);
 
     return 0;
 }
 
-void process_barcode_paired(BarcodeGroup* group, char** fwd_entry, char** rev_entry) {
+void process_barcode(BarcodeGroup* group, char** fwd_entry, char** rev_entry) {
     *fwd_entry = NULL;
     *rev_entry = NULL;
     // Step 0: Check group size and don't do full processing if not necessary
@@ -443,7 +366,8 @@ void process_barcode_paired(BarcodeGroup* group, char** fwd_entry, char** rev_en
     // Create a copy of the first array instead of using it directly
     SeqArray merged_fwd = create_seq_array(fwd_arrays[indices[0]].length);
     SeqArray merged_rev = create_seq_array(rev_arrays[indices[0]].length);
-
+    
+    // Copy initial arrays
     memcpy(merged_fwd.positions, fwd_arrays[indices[0]].positions, 
            fwd_arrays[indices[0]].length * sizeof(Position));
     memcpy(merged_rev.positions, rev_arrays[indices[0]].positions, 
@@ -482,106 +406,22 @@ void process_barcode_paired(BarcodeGroup* group, char** fwd_entry, char** rev_en
     free(fwd_seq); free(fwd_qual); free(rev_seq); free(rev_qual);
     free(similarities); 
     free(indices);
+    
+    // Free the consensus arrays
     free_seq_array(&fwd_consensus);
     free_seq_array(&rev_consensus);
+    
+    // Free the merged results
     free_seq_array(&merged_fwd);
     free_seq_array(&merged_rev);
+    
+    // Free the individual arrays
     for(int i=0; i<group->count; i++) {
         free_seq_array(&fwd_arrays[i]);
         free_seq_array(&rev_arrays[i]);
     }
     free(fwd_arrays);
     free(rev_arrays);
-}
-
-void process_barcode_single(BarcodeGroup* group, char** fwd_entry) {
-    *fwd_entry = NULL;
-    
-    // Step 0: Check group size and don't do full processing if not necessary
-    if(group->count == 0) return;
-    if(group->count == 1) {
-        // Format FASTQ entry
-        int fwd_len = snprintf(NULL, 0, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                              group->bc, group->count, group->fwd_reads[0], group->fwd_quals[0]) + 1;
-        
-        *fwd_entry = malloc(fwd_len);
-        snprintf(*fwd_entry, fwd_len, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                group->bc, group->count, group->fwd_reads[0], group->fwd_quals[0]);
-        return;
-    }
-
-    // Step 1: Get max length of reads
-    int L_fwd = 0;
-    for(int i = 0; i < group->count; i++) {
-        int curr_fwd_len = strlen(group->fwd_reads[i]);
-        if(curr_fwd_len > L_fwd) L_fwd = curr_fwd_len;
-    }
-
-    // Step 2: Convert reads to arrays
-    SeqArray* fwd_arrays = malloc(group->count * sizeof(SeqArray));
-    for(int i=0; i<group->count; i++) {
-        fwd_arrays[i] = seq_to_array(group->fwd_reads[i], group->fwd_quals[i], L_fwd);
-    }
-
-    // Step 3: Build unaligned consensus
-    SeqArray fwd_consensus = build_unaligned_consensus(fwd_arrays, group->count);
-
-    // Step 4: Compare reads and sort
-    double* similarities = malloc(group->count * sizeof(double));
-    int* indices = malloc(group->count * sizeof(int));
-    
-    for(int i=0; i<group->count; i++) {
-        similarities[i] = compare_seqs(&fwd_arrays[i], &fwd_consensus);
-        indices[i] = i;
-    }
-
-    // Sort indices based on similarity (descending order)
-    for(int i=0; i<group->count-1; i++) {
-        for(int j=i+1; j<group->count; j++) {
-            if(similarities[indices[i]] < similarities[indices[j]]) {
-                int temp = indices[i];
-                indices[i] = indices[j];
-                indices[j] = temp;
-            }
-        }
-    }
-
-    // Step 5: Merge sequences into consensus
-    // Create a copy of the first array instead of using it directly
-    SeqArray merged_fwd = create_seq_array(fwd_arrays[indices[0]].length);
-    memcpy(merged_fwd.positions, fwd_arrays[indices[0]].positions, 
-           fwd_arrays[indices[0]].length * sizeof(Position));
-    
-    for(int i=1; i<group->count; i++) {
-        SeqArray temp_fwd = merge_seqs(&merged_fwd, &fwd_arrays[indices[i]]);
-        free_seq_array(&merged_fwd);
-        merged_fwd = temp_fwd;
-    }
-
-    // Step 6: Convert to FASTQ and print
-    char *fwd_seq, *fwd_qual;
-    array_to_seq(&merged_fwd, &fwd_seq, &fwd_qual);
-
-    // Format FASTQ entry
-    int fwd_len = snprintf(NULL, 0, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                          group->bc, group->count, fwd_seq, fwd_qual) + 1;
-    
-    *fwd_entry = malloc(fwd_len);
-    snprintf(*fwd_entry, fwd_len, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-            group->bc, group->count, fwd_seq, fwd_qual);
-
-    // Cleanup
-    free(fwd_seq); 
-    free(fwd_qual);
-    free(similarities); 
-    free(indices);
-    free_seq_array(&fwd_consensus);
-    free_seq_array(&merged_fwd);
-    
-    for(int i=0; i<group->count; i++) {
-        free_seq_array(&fwd_arrays[i]);
-    }
-    free(fwd_arrays);
 }
 
 // Initialize work queue
@@ -652,7 +492,6 @@ void* worker_thread(void* arg) {
     WorkerArgs* args = (WorkerArgs*)arg;
     WorkQueue* queue = args->queue;
     OutputFiles* output = args->output;
-    bool paired_end_mode = args->paired_end_mode;
     
     while (true) {
         BarcodeGroup* group = queue_pop(queue);
@@ -660,32 +499,18 @@ void* worker_thread(void* arg) {
             break;  // Queue is empty and producer is done
         }
         
-        if (paired_end_mode) {
-            char *fwd_entry, *rev_entry;
-            process_barcode_paired(group, &fwd_entry, &rev_entry);
-            
-            if (fwd_entry && rev_entry) {
-                pthread_mutex_lock(&output->mutex);
-                fprintf(output->fwd_out, "%s", fwd_entry);
-                fprintf(output->rev_out, "%s", rev_entry);
-                pthread_mutex_unlock(&output->mutex);
-            }
-            
-            free(fwd_entry);
-            free(rev_entry);
-        } else {
-            char *fwd_entry;
-            process_barcode_single(group, &fwd_entry);
-            
-            if (fwd_entry) {
-                pthread_mutex_lock(&output->mutex);
-                fprintf(output->fwd_out, "%s", fwd_entry);
-                pthread_mutex_unlock(&output->mutex);
-            }
-            
-            free(fwd_entry);
+        char *fwd_entry, *rev_entry;
+        process_barcode(group, &fwd_entry, &rev_entry);
+        
+        if (fwd_entry && rev_entry) {
+            pthread_mutex_lock(&output->mutex);
+            fprintf(output->fwd_out, "%s", fwd_entry);
+            fprintf(output->rev_out, "%s", rev_entry);
+            pthread_mutex_unlock(&output->mutex);
         }
         
+        free(fwd_entry);
+        free(rev_entry);
         free_barcode_group(group);
     }
     
@@ -697,10 +522,6 @@ SeqArray create_seq_array(int length) {
     SeqArray arr;
     arr.length = length;
     arr.positions = malloc(length * sizeof(Position));
-    if (!arr.positions) {
-        fprintf(stderr, "Error: Failed to allocate memory for SeqArray\n");
-        exit(EXIT_FAILURE);
-    }
     for(int i=0; i<length; i++) {
         for(int j=0; j<5; j++) {
             arr.positions[i].scores[j] = 0;
@@ -816,12 +637,12 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
     
     // Initialize first cell
     score.data[0][0] = 0;
-    gap_x.data[0][0] = gap_open;
-    gap_y.data[0][0] = gap_open;
+    gap_x.data[0][0] = gap_open;  // Changed from -INFINITY
+    gap_y.data[0][0] = gap_open;  // Changed from -INFINITY
     
     // Initialize first column (gaps in reference)
     for (int y = 1; y < ylen; y++) {
-        gap_x.data[y][0] = gap_open + (y * gap_extend);
+        gap_x.data[y][0] = gap_open + (y * gap_extend);  // Changed initialization
         gap_y.data[y][0] = gap_open + (y * gap_extend);
         score.data[y][0] = gap_y.data[y][0];
         trace.data[y][0] = 3;
@@ -829,7 +650,7 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
     
     // Initialize first row (gaps in query)
     for (int x = 1; x < xlen; x++) {
-        gap_x.data[0][x] = gap_open + (x * gap_extend);
+        gap_x.data[0][x] = gap_open + (x * gap_extend);  // Changed initialization
         gap_y.data[0][x] = gap_open + (x * gap_extend);
         score.data[0][x] = gap_x.data[0][x];
         trace.data[0][x] = 2;
@@ -857,10 +678,10 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
                 trace.data[y][x] = 1;
             } else if (gap_x.data[y][x] >= gap_y.data[y][x]) {
                 score.data[y][x] = gap_x.data[y][x];
-                trace.data[y][x] = (open_x > extend_x) ? 2 : 2;
+                trace.data[y][x] = (open_x > extend_x) ? 2 : 2;  // Simplified to always use 2
             } else {
                 score.data[y][x] = gap_y.data[y][x];
-                trace.data[y][x] = (open_y > extend_y) ? 3 : 3;
+                trace.data[y][x] = (open_y > extend_y) ? 3 : 3;  // Simplified to always use 3
             }
         }
     }
@@ -888,23 +709,23 @@ char* align_arrays(const SeqArray* ref, const SeqArray* query) {
         int trace_val = trace.data[y][x];
         traceback[idx++] = trace_val;
         
-        if (trace_val == 1) {                           // Match/mismatch
+        if (trace_val == 1) {        // Match/mismatch
             x--;
             y--;
         } else if (trace_val == 2 || trace_val == 4) {  // Deletion (gap in query)
             x--;
-        } else {                                        // Insertion (gap in reference)
+        } else {                      // Insertion (gap in reference)
             y--;
         }
     }
     
     // Handle remaining gaps
     while (x > 0) {
-        traceback[idx++] = 2;
+        traceback[idx++] = 2;  // Use open gap code for simplicity in remaining sequence
         x--;
     }
     while (y > 0) {
-        traceback[idx++] = 3;
+        traceback[idx++] = 3;  // Use open gap code for simplicity in remaining sequence
         y--;
     }
     
@@ -1062,22 +883,33 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out) {
     *qual_out = realloc(*qual_out, out_pos + 1);
 }
 
+void print_usage(const char* program_name) {
+    fprintf(stderr, "Usage: %s [options]\n", program_name);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  --read1=file       Input FASTQ file 1\n");
+    fprintf(stderr, "  --read2=file       Input FASTQ file 2\n");
+    fprintf(stderr, "  --bc-start=int     Barcode start position (Zero-indexed, default: 0)\n");
+    fprintf(stderr, "  --bc-len=int       Barcode length (default: 18)\n");
+    fprintf(stderr, "  --gap-open=float   Gap open penalty (default: -3.0)\n");
+    fprintf(stderr, "  --gap-extend=float Gap extend penalty (default: -3.0)\n");
+    fprintf(stderr, "  --out1=file        Output file for consensus read 1\n");
+    fprintf(stderr, "  --out2=file        Output file for consensus read 2\n");
+    fprintf(stderr, "  --threads=int      Number of threads (default: 1)\n");
+    exit(EXIT_FAILURE);
+}
+
 // Cleanup definitions
 void free_barcode_group(BarcodeGroup* group) {
     for (int i = 0; i < group->count; i++) {
         free(group->fwd_reads[i]);
+        free(group->rev_reads[i]);
         free(group->fwd_quals[i]);
-        if (group->rev_reads) {
-            free(group->rev_reads[i]);
-            free(group->rev_quals[i]);
-        }
+        free(group->rev_quals[i]);
     }
     free(group->fwd_reads);
+    free(group->rev_reads);
     free(group->fwd_quals);
-    if (group->rev_reads) {
-        free(group->rev_reads);
-        free(group->rev_quals);
-    }
+    free(group->rev_quals);
     free(group);
 }
 
@@ -1092,14 +924,3 @@ void free_matrix(Matrix mat) {
     free(mat.data);
 }
 
-void cleanup_on_error(FILE* fwd_file, FILE* rev_file, OutputFiles* output, 
-    pthread_t* threads, WorkerArgs* thread_args) {
-if (fwd_file) fclose(fwd_file);
-if (rev_file) fclose(rev_file);
-if (output->fwd_out) fclose(output->fwd_out);
-if (output->rev_out) fclose(output->rev_out);
-pthread_mutex_destroy(&output->mutex);
-free(threads);
-free(thread_args);
-exit(EXIT_FAILURE);
-}
