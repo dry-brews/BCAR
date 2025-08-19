@@ -57,8 +57,9 @@ fi
 
 echo "Creating environment..."
 conda env create -f environment.yml
+source activate base
 conda activate bcar2-env
-conda install -n bcar2-env $COMPILER_PACKAGES -y
+conda install -n bcar2-env -c conda-forge $COMPILER_PACKAGES -y
 
 # Activate environment
 echo "Activating environment..."
