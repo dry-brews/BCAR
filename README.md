@@ -29,7 +29,7 @@ git clone https://github.com/dry-brews/BCAR.git
 ```
 
 ### 2. Build and Install
-BCAR allows simple compilation using a Makefile. Depending on your system architecture, you may need to compile independently.
+BCAR allows for simple compilation using a Makefile. Installation has been tested on Linux (Ubuntu) and MacOS. For unsupported systems, you may need to compile independently using gcc/g++ or clang.
 ```bash
 cd BCAR
 chmod +x install.sh
@@ -43,6 +43,7 @@ To test your installation:
 ```
 
 ### 3. Usage
+```bash
 Usage: ./fastq_sorter [options]
 Options:
   --in1 input1.fastq,input2.fastq,...
@@ -62,6 +63,7 @@ Options:
   --out1 file      Output file for consensus read 1
   --out2 file      Output file for consensus read 2
   --threads int    Number of threads (default: 1)
+```
 
 ## Contributing
 Contributions are welcome! Feel free to open issues or submit pull requests on the GitHub repository.
