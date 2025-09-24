@@ -19,6 +19,7 @@ The second script (bc_merger) works with a pair of sorted fastq files to generat
 - The barcode must occur at a **fixed location** in the **forward** read.
 - If the barcode is on the reverse read, simply swap the order you pass the files to the scripts. 
 - If the barcode position is not fixed but is adjacent to a constant sequence, you can preprocess your data using tools like [CutAdapt](https://cutadapt.readthedocs.io/) to trim your reads, ensuring that the barcodes are at a fixed location.
+- Pay special attention to the --max-len flag in seq_merge. If you have even a single read that is longer than --max-len, it may cause unexpected behavior. It is highly recommended to preprocess your reads with CutAdapt or a similar tool setting a maximum length parameter that is below --max-len. You can also set --max-len very high, but this will slow down the script.
 
 ## Installation
 
@@ -60,6 +61,7 @@ Options:
   --in2 file       Input FASTQ file 2 (if using paired-end reads)
   --bc-start int   Barcode start position (Zero-indexed, default: 0)
   --bc-len int     Barcode length (default: 18)
+  --max-len int    Maximum read length (default: 1024)
   --out1 file      Output file for consensus read 1
   --out2 file      Output file for consensus read 2
   --threads int    Number of threads (default: 1)
