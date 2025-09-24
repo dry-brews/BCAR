@@ -23,7 +23,7 @@ SEQ_MERGER = seq_merge
 all: $(FASTQ_SORTER) $(SEQ_MERGER) $(SEQ_MERGER_DEBUG)
 
 # Rule for fastq_sorter
-$(FASTQ_SORTER): $(SRC_DIR)/fastq_sorter.cpp
+$(FASTQ_SORTER): $(SRC_DIR)/fastq_sorter_v02.cpp
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< -o $@ -lz
 
 # Rule for seq_merge (bc_merger)
