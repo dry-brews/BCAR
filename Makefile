@@ -27,7 +27,7 @@ $(FASTQ_SORTER): $(SRC_DIR)/fastq_sorter_v02.cpp
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< -o $@ -lz
 
 # Rule for seq_merge (bc_merger)
-$(SEQ_MERGER): $(SRC_DIR)/bc_merger_v06.c
+$(SEQ_MERGER): $(SRC_DIR)/bc_merger_v07.c
 	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@ -lm -pthread
 
 # Clean target

@@ -39,8 +39,8 @@ chmod +x install.sh
 
 To test your installation:
 ```bash
-./fastq_sorter
-./bc_merger
+chmod +x test_installation.sh
+./test_installation.sh
 ```
 
 ### 3. Usage
@@ -57,14 +57,15 @@ Options:
 
 Usage: ./seq_merge [options]
 Options:
-  --in1 file       Input FASTQ file 1
-  --in2 file       Input FASTQ file 2 (if using paired-end reads)
-  --bc-start int   Barcode start position (Zero-indexed, default: 0)
-  --bc-len int     Barcode length (default: 18)
-  --max-len int    Maximum read length (default: 1024)
-  --out1 file      Output file for consensus read 1
-  --out2 file      Output file for consensus read 2
-  --threads int    Number of threads (default: 1)
+  --in1 file          Input FASTQ file 1
+  --in2 file          Input FASTQ file 2 (if using paired-end reads)
+  --bc-start int      Barcode start position (Zero-indexed, default: 0)
+  --bc-len int        Barcode length (default: 18)
+  --max-len int       Maximum read length (default: 1024)
+  --out1 file         Output file for consensus read 1
+  --out2 file         Output file for consensus read 2
+  --threads int       Number of threads (default: 1)
+  --no-alignment      If added, skip alignment and make barcode with unaligned consensus 
 ```
 
 ## Contributing
