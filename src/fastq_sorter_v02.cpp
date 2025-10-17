@@ -505,7 +505,7 @@ ProgramParams parseCommandLine(int argc, char* argv[]) {
     }
     
     // Split comma-separated files
-    std::stringstream ss(args["--in1"]);
+    std::stringstream ss(args["--in"]);
     std::string file;
     while (std::getline(ss, file, ',')) {
         if (!file.empty()) {
@@ -545,7 +545,7 @@ ProgramParams parseCommandLine(int argc, char* argv[]) {
     }
     
     if (args.find("--out") != args.end()) {
-        params.output1_file = args["--out1"];
+        params.output1_file = args["--out"];
     }
     
     if (args.find("--out-pairs") != args.end()) {
