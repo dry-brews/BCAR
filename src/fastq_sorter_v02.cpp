@@ -462,7 +462,7 @@ public:
             }
 
             int current_progress = 50 + static_cast<int>((processed_chunks * 50) / total_chunks);
-            reportProgress(current_progress);
+            // reportProgress(current_progress);
         }
 
         reverse_chunks.clear();
@@ -500,8 +500,8 @@ ProgramParams parseCommandLine(int argc, char* argv[]) {
     }
     
     // Required parameter
-    if (args.find("--in1") == args.end()) {
-        throw std::runtime_error("Read 1 file is required (--in1)");
+    if (args.find("--in") == args.end()) {
+        throw std::runtime_error("Read 1 file is required (--in)");
     }
     
     // Split comma-separated files
@@ -514,8 +514,8 @@ ProgramParams parseCommandLine(int argc, char* argv[]) {
     }
     
     // Optional paired files
-    if (args.find("--in2") != args.end()) {
-        std::stringstream ss_pairs(args["--in2"]);
+    if (args.find("--in-pairs") != args.end()) {
+        std::stringstream ss_pairs(args["--in-pairs"]);
         while (std::getline(ss_pairs, file, ',')) {
             if (!file.empty()) {
                 params.pairs_files.push_back(file);
@@ -544,11 +544,11 @@ ProgramParams parseCommandLine(int argc, char* argv[]) {
         params.barcode_length = std::stoul(args["--bc-len"]);
     }
     
-    if (args.find("--out1") != args.end()) {
+    if (args.find("--out") != args.end()) {
         params.output1_file = args["--out1"];
     }
     
-    if (args.find("--out2") != args.end()) {
+    if (args.find("--out-pairs") != args.end()) {
         params.output2_file = args["--out2"];
     }
     
@@ -576,12 +576,12 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         std::cerr << "Usage: " << argv[0] << " [options]\nOptions:\n"
-                 << "  --in1 str        (e.g., 'input1.fastq' or 'input1.fastq,input2.fastq')\n"
-                 << "  --in2 str        (e.g., 'input1_rev.fastq' or 'input1_rev.fastq,input2_rev.fastq')\n"
+                 << "  --in str         (e.g., 'input1.fastq' or 'input1.fastq,input2.fastq')\n"
+                 << "  --in-pairs str   (e.g., 'input1_rev.fastq' or 'input1_rev.fastq,input2_rev.fastq')\n"
                  << "  --bc-start int   Barcode start position (Zero-indexed, default: 0)\n"
                  << "  --bc-len int     Barcode length (default: 18)\n"
-                 << "  --out1 str       Output file for sorted read 1\n"
-                 << "  --out2 str       Output file for sorted read 2 (if using --in2)\n"
+                 << "  --out str        Output file for sorted read 1\n"
+                 << "  --out-pairs str  Output file for sorted read 2 (if using --in2)\n"
                  << "  --temp str       Path to temporary directory for storing chunk files (recommend .)\n" << std::endl;
         return 1;
     }
