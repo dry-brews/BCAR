@@ -45,25 +45,25 @@ chmod +x test_installation.sh
 
 ### 3. Usage
 ```bash
-Usage: ./fastq_sorter [options]
+Usage: ./bcar_sort [options]
 Options:
-  --in1 input1.fastq,input2.fastq,...
-  --in2 pairs1.fastq,pairs2.fastq,... (if using paired-end reads)
+  --in file        input1.fastq,input2.fastq,...
+  --in-pairs file  pairs1.fastq,pairs2.fastq,... (if using paired-end reads)
   --bc-start int   Barcode start position (Zero-indexed, default: 0)
   --bc-len int     Barcode length (default: 18)
-  --out1 file      Output file for sorted read 1
-  --out2 file      Output file for sorted read 2
+  --out file       Output file for sorted read 1
+  --out-pairs file Output file for sorted read 2
   --temp dir       Temporary directory for storing chunk files (recommend .)
 
-Usage: ./seq_merge [options]
+Usage: ./bcar_merge [options]
 Options:
-  --in1 file          Input FASTQ file 1
-  --in2 file          Input FASTQ file 2 (if using paired-end reads)
+  --in file           Input FASTQ file 1
+  --in-pairs file     Input FASTQ file 2 (if using paired-end reads)
   --bc-start int      Barcode start position (Zero-indexed, default: 0)
   --bc-len int        Barcode length (default: 18)
   --max-len int       Maximum read length (default: 1024)
-  --out1 file         Output file for consensus read 1
-  --out2 file         Output file for consensus read 2
+  --out file          Output file for consensus read 1
+  --out-pairs file    Output file for consensus read 2
   --threads int       Number of threads (default: 1)
   --no-alignment      If added, skip alignment and make barcode with unaligned consensus 
 ```
