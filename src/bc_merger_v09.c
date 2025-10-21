@@ -1393,7 +1393,8 @@ SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
         trace = align_arrays(seq1, seq2, &trace_len);
     } else {
         // Try banded alignments, doubling max_phase_diff until success or limit reached
-        int max_phase_diff = 20;
+        int max_phase_diff = (int)floor(sqrt((double)longer / 10.0));
+        if (max_phase_diff < 1) max_phase_diff = 1;
         while (true) {
             trace = align_arrays_band(seq1, seq2, &trace_len, max_phase_diff);
             if (trace != NULL && trace_len > 0) {
@@ -1406,7 +1407,7 @@ SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
                 // Give up on banded approach
                 break;
             }
-            max_phase_diff += 20;
+            max_phase_diff *= 2;
             if (max_phase_diff > (longer / 2)) {
                 max_phase_diff = (longer / 2) + 1; // ensure loop termination
             }
