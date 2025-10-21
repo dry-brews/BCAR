@@ -1389,11 +1389,11 @@ SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
     int longer = (len1 > len2) ? len1 : len2;
 
     // Use full alignment for very short sequences
-    if (longer <= 30) {
+    if (longer <= 50) {
         trace = align_arrays(seq1, seq2, &trace_len);
     } else {
         // Try banded alignments, doubling max_phase_diff until success or limit reached
-        int max_phase_diff = 10;
+        int max_phase_diff = 20;
         while (true) {
             trace = align_arrays_band(seq1, seq2, &trace_len, max_phase_diff);
             if (trace != NULL && trace_len > 0) {
@@ -1406,7 +1406,7 @@ SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
                 // Give up on banded approach
                 break;
             }
-            max_phase_diff *= 2;
+            max_phase_diff += 20;
             if (max_phase_diff > (longer / 2)) {
                 max_phase_diff = (longer / 2) + 1; // ensure loop termination
             }
