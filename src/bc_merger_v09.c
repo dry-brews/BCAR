@@ -114,8 +114,8 @@ void queue_push(WorkQueue* queue, BarcodeGroup* group);
 BarcodeGroup* queue_pop(WorkQueue* queue);
 void* worker_thread(void* arg);
 // process barcode group
-void process_barcode_paired(BarcodeGroup* group, char** fwd_entry, char** rev_entry, bool no_alignment); // signature updated
-void process_barcode_single(BarcodeGroup* group, char** fwd_entry, bool no_alignment); // signature updated
+void process_barcode_paired(BarcodeGroup* group, char** fwd_entry, char** rev_entry, bool no_alignment);
+void process_barcode_single(BarcodeGroup* group, char** fwd_entry, bool no_alignment);
 SeqArray seq_to_array(const char* seq, const char* qual, int length);
 double compare_positions(const Position* a, const Position* b);
 double compare_seqs(const SeqArray* a, const SeqArray* b);
@@ -846,7 +846,7 @@ SeqArray seq_to_array(const char* seq, const char* qual, int length) {
             if (qual[i] < 33) {
                 adjusted_qual_score = 0;
             } else if (qual[i] > 73) {
-                adjusted_qual_score = 46;
+                adjusted_qual_score = 42;
             } else {
                 adjusted_qual_score = q_adj[qual[i] - 33];
             }
@@ -958,144 +958,143 @@ IntMatrix create_int_matrix(int rows, int cols) {
 
 // Global alignment with traceback
 int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
-     int ylen = query->length + 1; // y = query = individual read
-     int xlen = ref->length + 1;   // x = reference = consensus
-     
-     // Create matrices
-     Matrix score = create_matrix(ylen, xlen);     
-     IntMatrix trace = create_int_matrix(ylen, xlen);     
-     Matrix match = create_matrix(query->length, ref->length);
-     Matrix gap_x = create_matrix(ylen, xlen);     
-     Matrix gap_y = create_matrix(ylen, xlen);     
-     
-     // Precompute match scores
-     for (int x = 0; x < ref->length; x++) {
-         for (int y = 0; y < query->length; y++) {
-             match.data[y][x] = compare_positions(&ref->positions[x], &query->positions[y]);
-         }
-     }
-     
-     // Initialize first cell
-     score.data[0][0] = 0;
-     gap_x.data[0][0] = gap_open;
-     gap_y.data[0][0] = gap_open;
-     
-     // Initialize first column (gaps in reference)
-     for (int y = 1; y < ylen; y++) {
-         gap_x.data[y][0] = gap_open + (y * gap_extend);
-         gap_y.data[y][0] = gap_open + (y * gap_extend);
-         score.data[y][0] = gap_y.data[y][0];
-        trace.data[y][0] = 3;
-     }
-     
-     // Initialize first row (gaps in query)
-     for (int x = 1; x < xlen; x++) {
-         gap_x.data[0][x] = gap_open + (x * gap_extend);
-         gap_y.data[0][x] = gap_open + (x * gap_extend);
-         score.data[0][x] = gap_x.data[0][x];
-        trace.data[0][x] = 2;
-     }
-     
-     // Fill matrices
-     for (int y = 1; y < ylen; y++) {
-         for (int x = 1; x < xlen; x++) {
-             // Match/mismatch
-             double diag = score.data[y-1][x-1] + match.data[y-1][x-1];
-             
-             // Gap in x (deletion)
-             double open_x = score.data[y][x-1] + gap_open;
-             double extend_x = gap_x.data[y][x-1] + gap_extend;
-             gap_x.data[y][x] = (open_x > extend_x) ? open_x : extend_x;
-             
-             // Gap in y (insertion)
-             double open_y = score.data[y-1][x] + gap_open;
-             double extend_y = gap_y.data[y-1][x] + gap_extend;
-             gap_y.data[y][x] = (open_y > extend_y) ? open_y : extend_y;
-             
-             // Find best score
-             if (diag >= gap_x.data[y][x] && diag >= gap_y.data[y][x]) {
-                 score.data[y][x] = diag;
-                trace.data[y][x] = 1;
-             } else if (gap_x.data[y][x] >= gap_y.data[y][x]) {
-                 score.data[y][x] = gap_x.data[y][x];
-                trace.data[y][x] = 2;
-             } else {
-                 score.data[y][x] = gap_y.data[y][x];
-                trace.data[y][x] = 3;
-             }
-         }
-     }
-     
-     // Traceback
-     int max_trace_len = query->length + ref->length + 1;
-     int* traceback = malloc(max_trace_len * sizeof(int));
-     if (!traceback) {
-         free_matrix(score);
-         free_int_matrix(trace);
-         free_matrix(match);
-         free_matrix(gap_x);
-         free_matrix(gap_y);
-         return NULL;
-     }
-     
-     int idx = 0;
-     int x = xlen - 1;
-     int y = ylen - 1;
-     
-     while (x > 0 && y > 0) {
-         // Bounds checking
-         if (x >= xlen || y >= ylen) break;
-         
-        int trace_val = trace.data[y][x];
-        traceback[idx++] = trace_val;
-         
-         if (trace_val == 1) {                           // Match/mismatch
-             x--;
-             y--;
-         } else if (trace_val == 2 || trace_val == 4) {  // Deletion (gap in query)
-             x--;
-         } else {                                        // Insertion (gap in reference)
-             y--;
-         }
-     }
-     
-     // Handle remaining gaps
-     while (x > 0) {
-        traceback[idx++] = 2;  // Use open gap code for simplicity in remaining sequence
-         x--;
-     }
-     while (y > 0) {
-        traceback[idx++] = 3;  // Use open gap code for simplicity in remaining sequence
-         y--;
-     }
-     
-     // Reverse the traceback (integer array)
-     for (int i = 0; i < idx/2; i++) {
-         int temp = traceback[i];
-         traceback[i] = traceback[idx-i-1];
-         traceback[idx-i-1] = temp;
-     }
-     if (out_len) *out_len = idx;
-     
-     // Cleanup
-     free_matrix(score);
-     free_int_matrix(trace);
-     free_matrix(match);
-     free_matrix(gap_x);
-     free_matrix(gap_y);
-     
-     return traceback;
- }
+    /* Global alignment (reworked):
+       - match score computed on-the-fly via compare_positions()
+       - linear gap penalty = gap_open (no affine)
+       - single-precision floats for DP storage
+       - contiguous block allocation for score and trace
+    */
 
-int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len, int max_phase_diff) {
-    const double NEG_INF = -1e100;
+    const float NEG_INF = -1e30f;
+    int ylen = query->length + 1; // rows (y)
+    int xlen = ref->length + 1;   // cols (x)
+
+    if (out_len) *out_len = 0;
+
+    if (ylen <= 0 || xlen <= 0) return NULL;
+
+    size_t cells = (size_t)ylen * (size_t)xlen;
+
+    // Allocate contiguous blocks
+    float *score_block = malloc(cells * sizeof(float));
+    int *trace_block = malloc(cells * sizeof(int));
+    if (!score_block || !trace_block) {
+        free(score_block);
+        free(trace_block);
+        return NULL;
+    }
+
+    // convenience macro for indexing
+    #define IDX(y,x) ((size_t)(y) * (size_t)xlen + (size_t)(x))
+
+    // Initialize score and trace
+    for (size_t i = 0; i < cells; i++) {
+        score_block[i] = NEG_INF;
+        trace_block[i] = 0;
+    }
+
+    float g = (float)gap_open; // linear gap penalty
+
+    // (0,0)
+    score_block[IDX(0,0)] = 0.0f;
+    trace_block[IDX(0,0)] = 0;
+
+    // First row (gaps in query -> deletions)
+    for (int x = 1; x < xlen; x++) {
+        score_block[IDX(0,x)] = score_block[IDX(0,x-1)] + g;
+        trace_block[IDX(0,x)] = 2; // deletion (gap in query)
+    }
+
+    // First column (gaps in reference -> insertions)
+    for (int y = 1; y < ylen; y++) {
+        score_block[IDX(y,0)] = score_block[IDX(y-1,0)] + g;
+        trace_block[IDX(y,0)] = 3; // insertion (gap in reference)
+    }
+
+    // Fill DP; compute match on-the-fly
+    for (int y = 1; y < ylen; y++) {
+        for (int x = 1; x < xlen; x++) {
+            float best = NEG_INF;
+            int t = 0;
+
+            // Diagonal (match/mismatch)
+            float diag = NEG_INF;
+            double mscore_d = compare_positions(&ref->positions[x-1], &query->positions[y-1]);
+            diag = score_block[IDX(y-1,x-1)] + (float)mscore_d;
+            best = diag;
+            t = 1;
+
+            // Left (deletion: gap in query)
+            float left = score_block[IDX(y,x-1)] + g;
+            if (left > best) { best = left; t = 2; }
+
+            // Up (insertion: gap in reference)
+            float up = score_block[IDX(y-1,x)] + g;
+            if (up > best) { best = up; t = 3; }
+
+            score_block[IDX(y,x)] = best;
+            trace_block[IDX(y,x)] = t;
+        }
+    }
+
+    // Traceback (same semantics as previous implementation)
+    int max_trace_len = query->length + ref->length + 1;
+    int *traceback = malloc(max_trace_len * sizeof(int));
+    if (!traceback) {
+        free(score_block);
+        free(trace_block);
+        return NULL;
+    }
+    int idx = 0;
+    int x = xlen - 1;
+    int y = ylen - 1;
+
+    while (x > 0 && y > 0) {
+        int tv = trace_block[IDX(y,x)];
+        traceback[idx++] = tv;
+        if (tv == 1) { x--; y--; }
+        else if (tv == 2) { x--; }
+        else { y--; }
+    }
+    while (x > 0) { traceback[idx++] = 2; x--; }
+    while (y > 0) { traceback[idx++] = 3; y--; }
+
+    // reverse traceback
+    for (int i = 0; i < idx/2; i++) {
+        int tmp = traceback[i];
+        traceback[i] = traceback[idx - i - 1];
+        traceback[idx - i - 1] = tmp;
+    }
+    if (out_len) *out_len = idx;
+
+    // cleanup
+    free(score_block);
+    free(trace_block);
+
+    #undef IDX
+
+    return traceback;
+}
+
+ int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len, int max_phase_diff) {
+    /* New banded global alignment:
+       - linear gap penalty = gap_open (no affine)
+       - match score computed on-the-fly via compare_positions()
+       - use float for DP storage
+       - contiguous block allocation for banded matrices
+       - sband is the (n,m) bottom-right score (must be in band)
+       - bestout uses l1>=l2 and m = 1.0
+    */
+
+    const float NEG_INF = -1e30f;
     int m = ref->length;    // x dimension (reference)
     int n = query->length;  // y dimension (query)
     int ylen = n + 1;
-    int xlen = m + 1;
-    int w = max_phase_diff; // band parameter
+    int w = max_phase_diff;
 
-    // Row band bounds
+    if (out_len) *out_len = 0;
+
+    // Allocate row band descriptors
     int *row_xmin = malloc(ylen * sizeof(int));
     int *row_width = malloc(ylen * sizeof(int));
     if (!row_xmin || !row_width) {
@@ -1103,18 +1102,8 @@ int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len,
         fatal_alloc("Failed to allocate band index arrays");
     }
 
-    // allocate banded storage per row
-    double **score = malloc(ylen * sizeof(double*));
-    double **gap_x = malloc(ylen * sizeof(double*));
-    double **gap_y = malloc(ylen * sizeof(double*));
-    int **trace = malloc(ylen * sizeof(int*));
-    double **match = malloc(ylen * sizeof(double*)); // banded match matrix
-    if (!score || !gap_x || !gap_y || !trace || !match) {
-        free(row_xmin); free(row_width);
-        free(score); free(gap_x); free(gap_y); free(trace); free(match);
-        fatal_alloc("Failed to allocate banded matrix pointers");
-    }
-
+    // First pass: compute per-row xmin/width and total cells
+    size_t total_cells = 0;
     for (int y = 0; y < ylen; y++) {
         int xmin = y - w;
         if (xmin < 0) xmin = 0;
@@ -1123,133 +1112,125 @@ int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len,
         int width = (xmax >= xmin) ? (xmax - xmin + 1) : 0;
         row_xmin[y] = xmin;
         row_width[y] = width;
+        total_cells += (size_t)width;
+    }
 
-        if (width > 0) {
-            score[y] = malloc(width * sizeof(double));
-            gap_x[y] = malloc(width * sizeof(double));
-            gap_y[y] = malloc(width * sizeof(double));
-            trace[y] = malloc(width * sizeof(int));
-            match[y] = malloc(width * sizeof(double));
-            if (!score[y] || !gap_x[y] || !gap_y[y] || !trace[y] || !match[y]) {
-                for (int yy = 0; yy <= y; yy++) {
-                    if (score[yy]) free(score[yy]);
-                    if (gap_x[yy]) free(gap_x[yy]);
-                    if (gap_y[yy]) free(gap_y[yy]);
-                    if (trace[yy]) free(trace[yy]);
-                    if (match[yy]) free(match[yy]);
-                }
-                free(score); free(gap_x); free(gap_y); free(trace); free(match);
-                free(row_xmin); free(row_width);
-                fatal_alloc("Failed to allocate banded matrix rows");
-            }
-            for (int i = 0; i < width; i++) {
+    if (total_cells == 0) {
+        free(row_xmin); free(row_width);
+        if (out_len) *out_len = 0;
+        return NULL;
+    }
+
+    // Allocate contiguous blocks for score and trace
+    float *score_block = malloc(total_cells * sizeof(float));
+    int *trace_block = malloc(total_cells * sizeof(int));
+    if (!score_block || !trace_block) {
+        free(score_block); free(trace_block);
+        free(row_xmin); free(row_width);
+        fatal_alloc("Failed to allocate banded matrix blocks");
+    }
+
+    // Row pointer arrays into contiguous blocks
+    float **score = malloc(ylen * sizeof(float*));
+    int **trace = malloc(ylen * sizeof(int*));
+    if (!score || !trace) {
+        free(score_block); free(trace_block);
+        free(score); free(trace);
+        free(row_xmin); free(row_width);
+        fatal_alloc("Failed to allocate band row pointers");
+    }
+
+    // Set row pointers and initialize cells to NEG_INF/0
+    size_t offset = 0;
+    for (int y = 0; y < ylen; y++) {
+        int wrow = row_width[y];
+        if (wrow > 0) {
+            score[y] = score_block + offset;
+            trace[y] = trace_block + offset;
+            for (int i = 0; i < wrow; i++) {
                 score[y][i] = NEG_INF;
-                gap_x[y][i] = NEG_INF;
-                gap_y[y][i] = NEG_INF;
                 trace[y][i] = 0;
-                match[y][i] = NEG_INF;
             }
+            offset += (size_t)wrow;
         } else {
-            score[y] = gap_x[y] = gap_y[y] = NULL;
+            score[y] = NULL;
             trace[y] = NULL;
-            match[y] = NULL;
         }
     }
 
     #define IN_BAND(yy, xx) ((xx) >= row_xmin[(yy)] && (xx) < row_xmin[(yy)] + row_width[(yy)])
     #define IDX(yy, xx) ((xx) - row_xmin[(yy)])
 
-    // initialize (0,0) if in band
+    // Linear gap penalty (use gap_open as linear gap)
+    float g = (float)gap_open;
+
+    // Initialize (0,0) if in band
     if (IN_BAND(0,0)) {
-        int idx0 = IDX(0,0);
-        score[0][idx0] = 0.0;
-        gap_x[0][idx0] = gap_open;
-        gap_y[0][idx0] = gap_open;
-        trace[0][idx0] = 0;
+        int i0 = IDX(0,0);
+        score[0][i0] = 0.0f;
+        trace[0][i0] = 0;
     }
 
-    // first row (y=0) gaps in query
+    // Initialize first row (y=0): propagate gaps to the right within band
     if (row_width[0] > 0) {
         for (int x = row_xmin[0]; x < row_xmin[0] + row_width[0]; x++) {
             if (x == 0) continue;
-            int i = IDX(0,x);
-            gap_x[0][i] = gap_open + (x * gap_extend);
-            gap_y[0][i] = gap_open + (x * gap_extend);
-            score[0][i] = gap_x[0][i];
-            trace[0][i] = 2;
+            if (!IN_BAND(0, x-1)) break; // can't propagate if left cell not in band
+            int i = IDX(0, x);
+            int left_i = IDX(0, x-1);
+            score[0][i] = score[0][left_i] + g;
+            trace[0][i] = 2; // gap in query (deletion)
         }
     }
 
-    // first column (x=0) gaps in reference
+    // Initialize first column (x=0): propagate gaps downward within band
     for (int y = 1; y < ylen; y++) {
-        if (!IN_BAND(y, 0)) continue;
+        if (!IN_BAND(y, 0) || !IN_BAND(y-1, 0)) continue;
         int i = IDX(y, 0);
-        gap_x[y][i] = gap_open + (y * gap_extend);
-        gap_y[y][i] = gap_open + (y * gap_extend);
-        score[y][i] = gap_y[y][i];
-        trace[y][i] = 3;
+        int up_i = IDX(y-1, 0);
+        score[y][i] = score[y-1][up_i] + g;
+        trace[y][i] = 3; // gap in reference (insertion)
     }
 
-    // Precompute banded match values and m_max
-    double m_max = NEG_INF;
-    for (int y = 1; y < ylen; y++) {
-        if (row_width[y] == 0) continue;
-        for (int x = row_xmin[y]; x < row_xmin[y] + row_width[y]; x++) {
-            if (x == 0) {
-                match[y][IDX(y,x)] = NEG_INF; // no diagonal for x==0
-                continue;
-            }
-            // compute match score for aligning ref[x-1] with query[y-1]
-            double v = compare_positions(&ref->positions[x-1], &query->positions[y-1]);
-            match[y][IDX(y,x)] = v;
-            if (v > m_max) m_max = v;
-        }
-    }
-    if (m_max == NEG_INF) m_max = 0.0;
-
-    // Fill DP inside band (use precomputed match)
+    // Fill DP within band computing match on-the-fly
     for (int y = 1; y < ylen; y++) {
         if (row_width[y] == 0) continue;
         for (int x = row_xmin[y]; x < row_xmin[y] + row_width[y]; x++) {
             int xi = IDX(y, x);
-            double diag = NEG_INF;
+            float best = NEG_INF;
+            int t = 0;
+
+            // Diagonal (match/mismatch)
             if (x > 0 && y > 0 && IN_BAND(y-1, x-1)) {
                 int prev_i = IDX(y-1, x-1);
-                double prev_score = score[y-1][prev_i];
-                if (prev_score > NEG_INF/2) {
-                    double mscore = match[y][xi]; // use precomputed value
-                    diag = prev_score + mscore;
+                float prev_score = score[y-1][prev_i];
+                if (prev_score > NEG_INF/2.0f) {
+                    double mscore_d = compare_positions(&ref->positions[x-1], &query->positions[y-1]);
+                    float mscore = (float)mscore_d;
+                    float diag = prev_score + mscore;
+                    best = diag;
+                    t = 1;
                 }
             }
 
-            double best_gap_x = NEG_INF;
+            // Left (deletion)
             if (x > 0 && IN_BAND(y, x-1)) {
                 int left_i = IDX(y, x-1);
-                double open_x = score[y][left_i] + gap_open;
-                double extend_x = gap_x[y][left_i] + gap_extend;
-                best_gap_x = (open_x > extend_x) ? open_x : extend_x;
+                float left_score = score[y][left_i];
+                if (left_score > NEG_INF/2.0f) {
+                    float cand = left_score + g;
+                    if (cand > best) { best = cand; t = 2; }
+                }
             }
 
-            double best_gap_y = NEG_INF;
+            // Up (insertion)
             if (y > 0 && IN_BAND(y-1, x)) {
                 int up_i = IDX(y-1, x);
-                double open_y = score[y-1][up_i] + gap_open;
-                double extend_y = gap_y[y-1][up_i] + gap_extend;
-                best_gap_y = (open_y > extend_y) ? open_y : extend_y;
-            }
-
-            gap_x[y][xi] = best_gap_x;
-            gap_y[y][xi] = best_gap_y;
-
-            double best = diag;
-            int t = (diag > NEG_INF/2) ? 1 : 0;
-            if (best_gap_x > best) {
-                best = best_gap_x;
-                t = 2;
-            }
-            if (best_gap_y > best) {
-                best = best_gap_y;
-                t = 3;
+                float up_score = score[y-1][up_i];
+                if (up_score > NEG_INF/2.0f) {
+                    float cand = up_score + g;
+                    if (cand > best) { best = cand; t = 3; }
+                }
             }
 
             score[y][xi] = best;
@@ -1257,91 +1238,60 @@ int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len,
         }
     }
 
-    // Compute sband: best score found inside the band
-    double sband = NEG_INF;
-    for (int y = 0; y < ylen; y++) {
-        if (row_width[y] == 0) continue;
-        for (int xi = 0; xi < row_width[y]; xi++) {
-            if (score[y][xi] > sband) sband = score[y][xi];
-        }
+    // Ensure bottom-right (n,m) is in band and get sband from that cell
+    if (!IN_BAND(n, m)) {
+        // cleanup
+        free(score_block); free(trace_block);
+        free(score); free(trace);
+        free(row_xmin); free(row_width);
+        if (out_len) *out_len = 0;
+        return NULL;
     }
-    if (sband == NEG_INF) {
-        // no cells computed in band -> no alignment possible
-        for (int y = 0; y < ylen; y++) {
-            if (score[y]) free(score[y]);
-            if (gap_x[y]) free(gap_x[y]);
-            if (gap_y[y]) free(gap_y[y]);
-            if (trace[y]) free(trace[y]);
-            if (match[y]) free(match[y]);
-        }
-        free(score); free(gap_x); free(gap_y); free(trace); free(match);
+    float sband = score[n][IDX(n, m)];
+    if (sband <= NEG_INF/2.0f) {
+        // unreachable end cell
+        free(score_block); free(trace_block);
+        free(score); free(trace);
         free(row_xmin); free(row_width);
         if (out_len) *out_len = 0;
         return NULL;
     }
 
-    // Compute the bound bestout from the note:
-    double l1 = (double)m;
-    double l2 = (double)n;
-    double g = gap_open;
-    double bestout = (2.0 * (w + 1.0) - (l1 - l2)) * g + (l2 - (w + 1.0)) * m_max;
+    // Compute bestout bound: enforce l1 >= l2 and use m=1.0
+    double l1 = (double)((m > n) ? m : n);
+    double l2 = (double)((m > n) ? n : m);
+    double mm = 1.0;
+    double bestout = (2.0 * (w + 1.0) - (l1 - l2)) * (double)gap_open + (l2 - (w + 1.0)) * mm;
 
-    if (!(sband >= bestout)) {
-        for (int y = 0; y < ylen; y++) {
-            if (score[y]) free(score[y]);
-            if (gap_x[y]) free(gap_x[y]);
-            if (gap_y[y]) free(gap_y[y]);
-            if (trace[y]) free(trace[y]);
-            if (match[y]) free(match[y]);
-        }
-        free(score); free(gap_x); free(gap_y); free(trace); free(match);
+    if (!((double)sband >= bestout)) {
+        // band did not prove optimal
+        free(score_block); free(trace_block);
+        free(score); free(trace);
         free(row_xmin); free(row_width);
         if (out_len) *out_len = -1;
         return NULL;
     }
 
-    // Traceback start
+    // Traceback starting at (m,n)
     int tx = m;
     int ty = n;
-    if (!IN_BAND(ty, tx)) {
-        if (row_width[ty] == 0) {
-            for (int y = 0; y < ylen; y++) {
-                if (score[y]) free(score[y]);
-                if (gap_x[y]) free(gap_x[y]);
-                if (gap_y[y]) free(gap_y[y]);
-                if (trace[y]) free(trace[y]);
-                if (match[y]) free(match[y]);
-            }
-            free(score); free(gap_x); free(gap_y); free(trace); free(match);
-            free(row_xmin); free(row_width);
-            if (out_len) *out_len = 0;
-            return NULL;
-        }
-        tx = row_xmin[ty] + row_width[ty] - 1;
-    }
-
     int max_trace_len = m + n + 1;
     int *traceback = malloc(max_trace_len * sizeof(int));
     if (!traceback) {
-        for (int y = 0; y < ylen; y++) {
-            if (score[y]) free(score[y]);
-            if (gap_x[y]) free(gap_x[y]);
-            if (gap_y[y]) free(gap_y[y]);
-            if (trace[y]) free(trace[y]);
-            if (match[y]) free(match[y]);
-        }
-        free(score); free(gap_x); free(gap_y); free(trace); free(match);
+        free(score_block); free(trace_block);
+        free(score); free(trace);
         free(row_xmin); free(row_width);
         return NULL;
     }
-    int idx = 0;
+    int idx_tb = 0;
 
     while (tx > 0 || ty > 0) {
         if (!IN_BAND(ty, tx)) {
+            // If we're outside band, consume gaps to move back into band
             if (tx > row_xmin[ty] + row_width[ty] - 1) {
-                traceback[idx++] = 2; tx--; continue;
+                traceback[idx_tb++] = 2; tx--; continue;
             } else if (tx < row_xmin[ty]) {
-                traceback[idx++] = 3; ty--; continue;
+                traceback[idx_tb++] = 3; ty--; continue;
             } else {
                 break;
             }
@@ -1349,30 +1299,27 @@ int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len,
         int ci = IDX(ty, tx);
         int t = trace[ty][ci];
         if (t == 0) break;
-        traceback[idx++] = t;
+        traceback[idx_tb++] = t;
         if (t == 1) { tx--; ty--; }
         else if (t == 2) { tx--; }
         else { ty--; }
     }
 
-    // reverse
-    for (int i = 0; i < idx/2; i++) {
+    // reverse traceback
+    for (int i = 0; i < idx_tb/2; i++) {
         int tmp = traceback[i];
-        traceback[i] = traceback[idx - i - 1];
-        traceback[idx - i - 1] = tmp;
+        traceback[i] = traceback[idx_tb - i - 1];
+        traceback[idx_tb - i - 1] = tmp;
     }
-    if (out_len) *out_len = idx;
+    if (out_len) *out_len = idx_tb;
 
-    // cleanup band storage
-    for (int y = 0; y < ylen; y++) {
-        if (score[y]) free(score[y]);
-        if (gap_x[y]) free(gap_x[y]);
-        if (gap_y[y]) free(gap_y[y]);
-        if (trace[y]) free(trace[y]);
-        if (match[y]) free(match[y]);
-    }
-    free(score); free(gap_x); free(gap_y); free(trace); free(match);
-    free(row_xmin); free(row_width);
+    // cleanup banded storage
+    free(score_block);
+    free(trace_block);
+    free(score);
+    free(trace);
+    free(row_xmin);
+    free(row_width);
 
     return traceback;
 }
