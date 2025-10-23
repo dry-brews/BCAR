@@ -16,8 +16,8 @@ LDFLAGS = -L$(CONDA_PREFIX)/lib
 SRC_DIR = src
 
 # Output executables
-FASTQ_SORTER = fastq_sorter
-SEQ_MERGER = seq_merge
+FASTQ_SORTER = bcar_sort
+SEQ_MERGER = bcar_merge
 
 # Default target
 all: $(FASTQ_SORTER) $(SEQ_MERGER) $(SEQ_MERGER_DEBUG)
@@ -27,7 +27,7 @@ $(FASTQ_SORTER): $(SRC_DIR)/fastq_sorter_v02.cpp
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< -o $@ -lz
 
 # Rule for seq_merge (bc_merger)
-$(SEQ_MERGER): $(SRC_DIR)/bc_merger_v07.c
+$(SEQ_MERGER): $(SRC_DIR)/bc_merger_v09.c
 	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@ -lm -pthread
 
 # Clean target

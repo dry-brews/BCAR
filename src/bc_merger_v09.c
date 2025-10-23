@@ -7,7 +7,7 @@
 #include <getopt.h>
 
 #define MAX_BARCODE_LEN 128
-#define DEFAULT_MAX_LINE_LEN 1024
+#define DEFAULT_MAX_LINE_LEN 131072
 #define BASES "ACGT-"
 #define DEFAULT_GAP_SCORE -3.0
 #define VECTOR_LENGTH 5
@@ -89,8 +89,7 @@ const int basemap[256] = { ['A']=0, ['C']=1, ['G']=2, ['T']=3, ['-']=4, ['N']=4 
 const int q_adj[41] = { // adjusted quality score mapping
     0, 0, 0, 0, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34, 35, 36, 37, 38, 39, 40, 41, 42
 };
-double gap_open = DEFAULT_GAP_SCORE;
-double gap_extend = DEFAULT_GAP_SCORE;
+double gap_pen = DEFAULT_GAP_SCORE;
 int max_line_len = DEFAULT_MAX_LINE_LEN;
 double call_total = 0.0;
 double call_missense = 0.0;
@@ -144,8 +143,7 @@ void print_usage(const char* program_name) {
     fprintf(stderr, "  --bc-start int     Barcode start position (Zero-indexed, default: 0)\n");
     fprintf(stderr, "  --bc-len int       Barcode length (default: 18)\n");
     fprintf(stderr, "  --max-len int      Maximum read length (default: 1024)\n");
-    fprintf(stderr, "  --gap-open float   Gap open penalty (default: -3.0)\n");
-    fprintf(stderr, "  --gap-extend float Gap extend penalty (default: -3.0)\n");
+    fprintf(stderr, "  --gap float        Gap penalty for alignment (default: -3.0)\n");
     fprintf(stderr, "  --out file         Output file for consensus read 1\n");
     fprintf(stderr, "  --out-pairsfile    Output file for consensus read 2\n");
     fprintf(stderr, "  --threads int      Number of threads (default: 1)\n");
@@ -178,8 +176,7 @@ int main(int argc, char *argv[]) {
         {"bc-start", required_argument, 0, 's'},
         {"bc-len", required_argument, 0, 'l'},
         {"max-len", required_argument, 0, 'm'},
-        {"gap-open", required_argument, 0, 'g'},
-        {"gap-extend", required_argument, 0, 'e'},
+        {"gap", required_argument, 0, 'g'},
         {"out", required_argument, 0, '1'},
         {"out-pairs", required_argument, 0, '2'},
         {"threads", required_argument, 0, 't'},
@@ -196,8 +193,7 @@ int main(int argc, char *argv[]) {
             case 's': bc_start = atoi(optarg); break;
             case 'l': bc_len = atoi(optarg); break;
             case 'm': max_line_len = atoi(optarg); break;
-            case 'g': gap_open = atof(optarg); break;
-            case 'e': gap_extend = atof(optarg); break;
+            case 'g': gap_pen = atof(optarg); break;
             case '1': out1_file = optarg; break;
             case '2': out2_file = optarg; break;
             case 't': num_threads = atoi(optarg); break;
@@ -958,12 +954,6 @@ IntMatrix create_int_matrix(int rows, int cols) {
 
 // Global alignment with traceback
 int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
-    /* Global alignment (reworked):
-       - match score computed on-the-fly via compare_positions()
-       - linear gap penalty = gap_open (no affine)
-       - single-precision floats for DP storage
-       - contiguous block allocation for score and trace
-    */
 
     const float NEG_INF = -1e30f;
     int ylen = query->length + 1; // rows (y)
@@ -993,7 +983,7 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
         trace_block[i] = 0;
     }
 
-    float g = (float)gap_open; // linear gap penalty
+    float g = (float)gap_pen; // linear gap penalty
 
     // (0,0)
     score_block[IDX(0,0)] = 0.0f;
@@ -1077,14 +1067,6 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
 }
 
  int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len, int max_phase_diff) {
-    /* New banded global alignment:
-       - linear gap penalty = gap_open (no affine)
-       - match score computed on-the-fly via compare_positions()
-       - use float for DP storage
-       - contiguous block allocation for banded matrices
-       - sband is the (n,m) bottom-right score (must be in band)
-       - bestout uses l1>=l2 and m = 1.0
-    */
 
     const float NEG_INF = -1e30f;
     int m = ref->length;    // x dimension (reference)
@@ -1162,7 +1144,7 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
     #define IDX(yy, xx) ((xx) - row_xmin[(yy)])
 
     // Linear gap penalty (use gap_open as linear gap)
-    float g = (float)gap_open;
+    float g = (float)gap_pen;
 
     // Initialize (0,0) if in band
     if (IN_BAND(0,0)) {
@@ -1261,7 +1243,7 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
     double l1 = (double)((m > n) ? m : n);
     double l2 = (double)((m > n) ? n : m);
     double mm = 1.0;
-    double bestout = (2.0 * (w + 1.0) - (l1 - l2)) * (double)gap_open + (l2 - (w + 1.0)) * mm;
+    double bestout = (2.0 * (w + 1.0) - (l1 - l2)) * (double)gap_pen + (l2 - (w + 1.0)) * mm;
 
     if (!((double)sband >= bestout)) {
         // band did not prove optimal
