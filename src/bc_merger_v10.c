@@ -1016,8 +1016,15 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
             t = 1;
 
             // Left (deletion: gap in query)
-            float left = score_block[IDX(y,x-1)] + g;
-            if (left > best) { best = left; t = 2; }
+            float g_left = g;
+                double total_ref = 0.0;
+                for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
+                if (total_ref > 0.0) {
+                    double gap_frac_ref = (double)ref->positions[x-1].scores[4] / total_ref;
+                    g_left = (float)(g * (1.0 - gap_relax_factor * gap_frac_ref));
+                }
+                float left = score_block[IDX(y,x-1)] + g_left;
+                if (left > best) { best = left; t = 2; }
 
             // Up (insertion: gap in reference)
             float g_up = g;
@@ -1208,7 +1215,15 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
                 int left_i = IDX(y, x-1);
                 float left_score = score[y][left_i];
                 if (left_score > NEG_INF/2.0f) {
-                    float cand = left_score + g;
+                    // relax gap penalty based on ref position x-1
+                    float g_left = g;
+                    double total_ref = 0.0;
+                    for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
+                    if (total_ref > 0.0) {
+                        double gap_frac_ref = (double)ref->positions[x-1].scores[4] / total_ref;
+                        g_left = (float)(g * (1.0 - gap_relax_factor * gap_frac_ref));
+                    }
+                    float cand = left_score + g_left;
                     if (cand > best) { best = cand; t = 2; }
                 }
             }
