@@ -9,7 +9,7 @@
 #define MAX_BARCODE_LEN 128
 #define DEFAULT_MAX_LINE_LEN 131072
 #define BASES "ACGT-"
-#define DEFAULT_GAP_SCORE -3.0
+#define DEFAULT_GAP_SCORE -1.0
 #define VECTOR_LENGTH 5
 #define q_correct -0.004575749 // = 1/10 * log10(0.9)
 #define q_error -0.1 // = 1/10 * log10(0.1)
@@ -90,7 +90,6 @@ const int q_adj[41] = { // adjusted quality score mapping
     0, 0, 0, 0, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34, 35, 36, 37, 38, 39, 40, 41, 42
 };
 double gap_pen = DEFAULT_GAP_SCORE;
-double gap_relax_factor = 0.8; // NEW: 0..1, how much to relax gap penalty when consensus gap evidence exists
 int max_line_len = DEFAULT_MAX_LINE_LEN;
 double call_total = 0.0;
 double call_missense = 0.0;
@@ -144,7 +143,7 @@ void print_usage(const char* program_name) {
     fprintf(stderr, "  --bc-start int     Barcode start position (Zero-indexed, default: 0)\n");
     fprintf(stderr, "  --bc-len int       Barcode length (default: 18)\n");
     fprintf(stderr, "  --max-len int      Maximum read length (default: 1024)\n");
-    fprintf(stderr, "  --gap float        Gap penalty for alignment (default: -3.0)\n");
+    fprintf(stderr, "  --gap float        Gap penalty for alignment (default: -1.0)\n");
     fprintf(stderr, "  --out file         Output file for consensus read 1\n");
     fprintf(stderr, "  --out-pairsfile    Output file for consensus read 2\n");
     fprintf(stderr, "  --threads int      Number of threads (default: 1)\n");
@@ -856,21 +855,24 @@ SeqArray seq_to_array(const char* seq, const char* qual, int length) {
 
 // Compare two positions using scaled cosine similarity
 double compare_positions(const Position* vec1, const Position* vec2) {
-    double dot = 0.0, mag1 = 0.0, mag2 = 0.0;
+    // We are guaranteed that vec2 only has one non-zero entry
+    // numerator is simply the value at that entry in vec1
+    // denominator is magnitude of vec1
+    // that is, cosine similarity reduces to v1_i / |v1|
+    double mag1 = 0.0, numerator = 0.0;
     
     for (int i = 0; i < VECTOR_LENGTH; i++) {
         double v1 = vec1->scores[i];
         double v2 = vec2->scores[i];
-        dot += v1 * v2;
+
         mag1 += v1 * v1;
-        mag2 += v2 * v2;
+        if (v2 > 0.0) {
+            numerator = v1
+        }
     }
-    
-    // heuristics to speed up return
-    if (mag1 == 0.0 || mag2 == 0.0) return 0.0; // empty vectors
 
     // calculate cosine similarity
-    return (2.0 * (dot / (sqrt(mag1) * sqrt(mag2)))) - 1.0;
+    return 2.0 * numerator / (sqrt(mag1)) - 1.0;
 }
 
 // Compare two sequences by summed position similarity
@@ -1021,21 +1023,14 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
                 for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
                 if (total_ref > 0.0) {
                     double gap_frac_ref = (double)ref->positions[x-1].scores[4] / total_ref;
-                    g_left = (float)(g * (1.0 - gap_relax_factor * gap_frac_ref));
+                    g_left = (float)(g * (1.0 - gap_frac_ref));
                 }
                 float left = score_block[IDX(y,x-1)] + g_left;
                 if (left > best) { best = left; t = 2; }
 
             // Up (insertion: gap in reference)
-            float g_up = g;
-                double total_q = 0.0;
-                for (int bb = 0; bb < 5; bb++) total_q += query->positions[y-1].scores[bb];
-                if (total_q > 0.0) {
-                    double gap_frac_q = (double)query->positions[y-1].scores[4] / total_q;
-                    g_up = (float)(g * (1.0 - gap_relax_factor * gap_frac_q));
-                }
-                float up = score_block[IDX(y-1,x)] + g_up;
-                if (up > best) { best = up; t = 3; }
+            float up = score_block[IDX(y-1,x)] + g;
+            if (up > best) { best = up; t = 3; }
 
             score_block[IDX(y,x)] = best;
             trace_block[IDX(y,x)] = t;
@@ -1221,7 +1216,7 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
                     for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
                     if (total_ref > 0.0) {
                         double gap_frac_ref = (double)ref->positions[x-1].scores[4] / total_ref;
-                        g_left = (float)(g * (1.0 - gap_relax_factor * gap_frac_ref));
+                        g_left = (float)(g * (1.0 - gap_frac_ref));
                     }
                     float cand = left_score + g_left;
                     if (cand > best) { best = cand; t = 2; }
@@ -1233,15 +1228,7 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
                 int up_i = IDX(y-1, x);
                 float up_score = score[y-1][up_i];
                 if (up_score > NEG_INF/2.0f) {
-                    // relax gap penalty based on query position y-1
-                    float g_up = g;
-                    double total_q = 0.0;
-                    for (int bb = 0; bb < 5; bb++) total_q += query->positions[y-1].scores[bb];
-                    if (total_q > 0.0) {
-                        double gap_frac_q = (double)query->positions[y-1].scores[4] / total_q;
-                        g_up = (float)(g * (1.0 - gap_relax_factor * gap_frac_q));
-                    }
-                    float cand = up_score + g_up;
+                    float cand = up_score + g;
                     if (cand > best) { best = cand; t = 3; }
                 }
             }
@@ -1353,7 +1340,7 @@ SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
         trace = align_arrays(seq1, seq2, &trace_len);
     } else {
         // Try banded alignments, doubling max_phase_diff until success or limit reached
-        int max_phase_diff = (int)floor(sqrt((double)longer / 10.0));
+        int max_phase_diff = (int)floor(sqrt((double)longer 0.04));
         if (max_phase_diff < 1) max_phase_diff = 1;
         while (true) {
             trace = align_arrays_band(seq1, seq2, &trace_len, max_phase_diff);
