@@ -855,28 +855,77 @@ SeqArray seq_to_array(const char* seq, const char* qual, int length) {
 
 // Compare two positions using scaled cosine similarity
 double compare_positions(const Position* vec1, const Position* vec2) {
-    // We are guaranteed that vec2 only has one non-zero entry
-    // numerator is simply the value at that entry in vec1
-    // denominator is magnitude of vec1
-    // that is, cosine similarity reduces to v1_i / |v1|
-    double mag1 = 0.0, numerator = 0.0;
-    
-    for (int i = 0; i < VECTOR_LENGTH; i++) {
-        double v1 = vec1->scores[i];
-        double v2 = vec2->scores[i];
+    // Fast path: detect if one (or both) vectors are one-hot (only one non-zero element).
+    int nz1 = 0, nz2 = 0;
+    int idx1 = -1, idx2 = -1;
+    double val1 = 0.0, val2 = 0.0;
 
-        mag1 += v1 * v1;
-        if (v2 > 0.0) {
-            numerator = v1;
+    for (int i = 0; i < VECTOR_LENGTH; i++) {
+        if (vec1->scores[i] != 0) {
+            nz1++;
+            if (nz1 == 1) { idx1 = i; val1 = (double)vec1->scores[i]; }
         }
+        if (vec2->scores[i] != 0) {
+            nz2++;
+            if (nz2 == 1) { idx2 = i; val2 = (double)vec2->scores[i]; }
+        }
+        // early exit if both have >1 non-zero (we will do full path)
+        if (nz1 > 1 && nz2 > 1) break;
     }
 
-    // calculate cosine similarity
-    return 2.0 * numerator / (sqrt(mag1)) - 1.0;
+    // Both empty?
+    if (nz1 == 0 || nz2 == 0) return 0.0;
+
+    // Case: both are one-hot -> trivial compute
+    if (nz1 == 1 && nz2 == 1) {
+        double dot = val1 * val2;
+        double mag1 = val1 * val1;
+        double mag2 = val2 * val2;
+        if (mag1 == 0.0 || mag2 == 0.0) return 0.0;
+        return (2.0 * (dot / sqrt(mag1 * mag2))) - 1.0;
+    }
+
+    // Case: vec1 is one-hot, vec2 is arbitrary -> compute dot using single index
+    if (nz1 == 1) {
+        double dot = val1 * (double)vec2->scores[idx1];
+        double mag1 = val1 * val1;
+        double mag2 = 0.0;
+        for (int i = 0; i < VECTOR_LENGTH; i++) {
+            double v = (double)vec2->scores[i];
+            mag2 += v * v;
+        }
+        if (mag1 == 0.0 || mag2 == 0.0) return 0.0;
+        return (2.0 * (dot / sqrt(mag1 * mag2))) - 1.0;
+    }
+
+    // Case: vec2 is one-hot
+    if (nz2 == 1) {
+        double dot = val2 * (double)vec1->scores[idx2];
+        double mag2 = val2 * val2;
+        double mag1 = 0.0;
+        for (int i = 0; i < VECTOR_LENGTH; i++) {
+            double v = (double)vec1->scores[i];
+            mag1 += v * v;
+        }
+        if (mag1 == 0.0 || mag2 == 0.0) return 0.0;
+        return (2.0 * (dot / sqrt(mag1 * mag2))) - 1.0;
+    }
+
+    // Fallback: neither vector is one-hot -> full computation
+    double dot = 0.0, mag1_f = 0.0, mag2_f = 0.0;
+    for (int i = 0; i < VECTOR_LENGTH; i++) {
+        double v1 = (double)vec1->scores[i];
+        double v2 = (double)vec2->scores[i];
+        dot += v1 * v2;
+        mag1_f += v1 * v1;
+        mag2_f += v2 * v2;
+    }
+    if (mag1_f == 0.0 || mag2_f == 0.0) return 0.0;
+    return (2.0 * (dot / sqrt(mag1_f * mag2_f))) - 1.0;
 }
 
 // Compare two sequences by summed position similarity
-double compare_seqs(const SeqArray* b, const SeqArray* a) {
+double compare_seqs(const SeqArray* a, const SeqArray* b) {
     if(a->length != b->length || a->length == 0) return 0.0;
     
     double total = 0.0;
