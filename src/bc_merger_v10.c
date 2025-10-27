@@ -867,7 +867,7 @@ double compare_positions(const Position* vec1, const Position* vec2) {
 
         mag1 += v1 * v1;
         if (v2 > 0.0) {
-            numerator = v1
+            numerator = v1;
         }
     }
 
