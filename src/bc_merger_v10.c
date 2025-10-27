@@ -855,25 +855,28 @@ SeqArray seq_to_array(const char* seq, const char* qual, int length) {
 
 // Compare two positions using scaled cosine similarity
 double compare_positions(const Position* vec1, const Position* vec2) {
-    double dot = 0.0, mag1 = 0.0, mag2 = 0.0;
+    // We are guaranteed that vec2 only has one non-zero entry
+    // numerator is simply the value at that entry in vec1
+    // denominator is magnitude of vec1
+    // that is, cosine similarity reduces to v1_i / |v1|
+    double mag1 = 0.0, numerator = 0.0;
     
     for (int i = 0; i < VECTOR_LENGTH; i++) {
         double v1 = vec1->scores[i];
         double v2 = vec2->scores[i];
-        dot += v1 * v2;
+
         mag1 += v1 * v1;
-        mag2 += v2 * v2;
+        if (v2 > 0.0) {
+            numerator = v1;
+        }
     }
-    
-    // heuristics to speed up return
-    if (mag1 == 0.0 || mag2 == 0.0) return 0.0; // empty vectors
 
     // calculate cosine similarity
-    return (2.0 * (dot / (sqrt(mag1) * sqrt(mag2)))) - 1.0;
+    return 2.0 * numerator / (sqrt(mag1)) - 1.0;
 }
 
 // Compare two sequences by summed position similarity
-double compare_seqs(const SeqArray* a, const SeqArray* b) {
+double compare_seqs(const SeqArray* b, const SeqArray* a) {
     if(a->length != b->length || a->length == 0) return 0.0;
     
     double total = 0.0;
