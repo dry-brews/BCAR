@@ -1016,14 +1016,16 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
 
             // Left (deletion: gap in query)
             float g_left = g;
-                double total_ref = 0.0;
+            // if consensus is gapped, relax the penalty against putting a gap in the query
+            if (ref->positions[x-1].scores[4] > 0) {
+                int total_ref = 0;
                 for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
-                if (total_ref > 0.0) {
-                    double gap_frac_ref = (double)ref->positions[x-1].scores[4] / total_ref;
-                    g_left = (float)(g * (1.0 - gap_frac_ref));
-                }
-                float left = score_block[IDX(y,x-1)] + g_left;
-                if (left > best) { best = left; t = 2; }
+                // total_ref > 0 is guaranteed because gap count > 0 and scores are non-negative
+                float gap_frac_ref = (float)ref->positions[x-1].scores[4] / (float)total_ref;
+                g_left = g * (1.0f - gap_frac_ref);
+            }
+            float left = score_block[IDX(y,x-1)] + g_left;
+            if (left > best) { best = left; t = 2; }
 
             // Up (insertion: gap in reference)
             float up = score_block[IDX(y-1,x)] + g;
@@ -1207,13 +1209,14 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
                 int left_i = IDX(y, x-1);
                 float left_score = score[y][left_i];
                 if (left_score > NEG_INF/2.0f) {
-                    // relax gap penalty based on ref position x-1
+                    // if consensus is gapped, relax the penalty against putting a gap in the query
                     float g_left = g;
-                    double total_ref = 0.0;
-                    for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
-                    if (total_ref > 0.0) {
-                        double gap_frac_ref = (double)ref->positions[x-1].scores[4] / total_ref;
-                        g_left = (float)(g * (1.0 - gap_frac_ref));
+                    if (ref->positions[x-1].scores[4] > 0) {
+                        int total_ref = 0;
+                        for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
+                        // total_ref > 0 is guaranteed because gap count > 0 and scores are non-negative
+                        float gap_frac_ref = (float)ref->positions[x-1].scores[4] / (float)total_ref;
+                        g_left = g * (1.0f - gap_frac_ref);
                     }
                     float cand = left_score + g_left;
                     if (cand > best) { best = cand; t = 2; }
