@@ -2,7 +2,7 @@
 
 # Check if we're in the conda environment
 ifndef CONDA_PREFIX
-$(error Please run 'conda activate bcar2-env' before using make)
+$(error Please run 'conda activate bcar-env' before using make)
 endif
 
 # Compiler settings
@@ -27,7 +27,7 @@ $(FASTQ_SORTER): $(SRC_DIR)/fastq_sorter_v02.cpp
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< -o $@ -lz
 
 # Rule for seq_merge (bc_merger)
-$(SEQ_MERGER): $(SRC_DIR)/bc_merger_v09.c
+$(SEQ_MERGER): $(SRC_DIR)/bc_merger_v12.c
 	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@ -lm -pthread
 
 # Clean target

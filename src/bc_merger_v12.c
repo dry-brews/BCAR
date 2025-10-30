@@ -20,8 +20,6 @@ typedef struct {
     char bc[MAX_BARCODE_LEN];
     char** fwd_reads;
     char** fwd_quals;
-    char** rev_reads;
-    char** rev_quals;
     int count;
     int capacity; // added capacity field
 } BarcodeGroup;
@@ -64,7 +62,6 @@ typedef struct {
 // Structure to hold output file handles
 typedef struct {
     FILE* fwd_out;
-    FILE* rev_out;
     pthread_mutex_t mutex;
 } OutputFiles;
 
@@ -76,6 +73,9 @@ typedef struct {
     bool paired_end_mode;
     bool no_alignment;
 } WorkerArgs;
+
+// Structure for sorting reads by similarity
+typedef struct { int idx; double sim; } IdxSim;
 
 // Global variables
 const char* bases = BASES;
@@ -89,7 +89,6 @@ double call_total = 0.0;
 double call_missense = 0.0;
 double call_indel = 0.0;
 FILE* g_fwd_file = NULL;
-FILE* g_rev_file = NULL;
 OutputFiles* g_output_ptr = NULL;
 pthread_t* g_threads_ptr = NULL;
 WorkerArgs* g_thread_args_ptr = NULL;
@@ -101,86 +100,27 @@ void queue_push(WorkQueue* queue, BarcodeGroup* group);
 BarcodeGroup* queue_pop(WorkQueue* queue);
 void* worker_thread(void* arg);
 // process barcode group
-void process_barcode_paired(BarcodeGroup* group, char** fwd_entry, char** rev_entry, bool no_alignment);
-void process_barcode_single(BarcodeGroup* group, char** fwd_entry, bool no_alignment);
+void process_barcode(BarcodeGroup* group, char** fwd_entry, bool no_alignment);
 SeqArray seq_to_array(const char* seq, const char* qual, int length);
 double compare_positions(const Position* a, const Position* b);
 double compare_seqs(const SeqArray* a, const SeqArray* b);
 SeqArray build_unaligned_consensus(SeqArray* sequences, int count);
 int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len);
+int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len, int max_phase_diff);
 SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2);
 void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out);
 // create and free objects
 SeqArray create_seq_array(int length);
-void free_matrix(Matrix mat);
 void free_seq_array(SeqArray* arr);
 void free_barcode_group(BarcodeGroup* group);
-void cleanup_on_error(FILE* fwd_file, FILE* rev_file, OutputFiles* output, pthread_t* threads, WorkerArgs* thread_args);
+void cleanup_on_error(FILE* fwd_file, OutputFiles* output, pthread_t* threads, WorkerArgs* thread_args);
+void fatal_alloc(const char* where);
 // other
 double log10addexp(double A, double B);
 void print_usage(const char* program_name);
+static int cmp_idxsim_desc(const void* a, const void* b);
 
-// Helper functions
-// Helper to print usage
-void print_usage(const char* program_name) {
-    fprintf(stderr, "Usage: %s [options]\n", program_name);
-    fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  --in file          Input FASTQ file 1 (required)\n");
-    fprintf(stderr, "  --in-pairs file    Input FASTQ file 2 (optional, enables paired-end mode)\n");
-    fprintf(stderr, "  --bc-start int     Barcode start position (Zero-indexed, default: 0)\n");
-    fprintf(stderr, "  --bc-len int       Barcode length (default: 18)\n");
-    fprintf(stderr, "  --max-len int      Maximum read length (default: 1024)\n");
-    fprintf(stderr, "  --gap float        Gap penalty for alignment (default: -1.0)\n");
-    fprintf(stderr, "  --out file         Output file for consensus read 1\n");
-    fprintf(stderr, "  --out-pairsfile    Output file for consensus read 2\n");
-    fprintf(stderr, "  --threads int      Number of threads (default: 1)\n");
-    fprintf(stderr, "  --no-alignment     Skip alignment/merging; use unaligned consensus directly\n");
-    exit(EXIT_FAILURE);
-}
-
-// Helper used locally to sort reads by similarity
-typedef struct { int idx; double sim; } IdxSim;
-static int cmp_idxsim_desc(const void* a, const void* b) {
-    const IdxSim* A = a;
-    const IdxSim* B = b;
-    if (A->sim < B->sim) return 1;
-    if (A->sim > B->sim) return -1;
-    return 0;
-}
-
-// Helper function to create a new SeqArray
-SeqArray create_seq_array(int length) {
-    SeqArray arr;
-    arr.length = length;
-    arr.positions = calloc(length, sizeof(Position));
-    if (!arr.positions) {
-        fatal_alloc("Failed to allocate SeqArray");
-        arr.positions = NULL;
-        arr.length = 0;
-    }
-    return arr;
-}
-
-// Helper function to print message and perform global cleanup (will exit)
-void fatal_alloc(const char* where) {
-    fprintf(stderr, "Fatal error: %s\n", where);
-    cleanup_on_error(g_fwd_file, g_rev_file, g_output_ptr, g_threads_ptr, g_thread_args_ptr);
-}
-
-// Helper function to avoid underflow on q-scores
-double log10addexp(double A, double B) {
-    // Ensure A is the larger of the two values to avoid underflow
-    if (A < B) {
-        double temp = A;
-        A = B;
-        B = temp;
-    }
-
-    // Compute log10(10^A + 10^B) = A + log10(1 + 10^(B - A))
-    double diff = B - A;
-    return A + log10(1.0 + pow(10.0, diff));
-}
-
+// Main
 int main(int argc, char *argv[]) {
     // Default values
     const char *in1_file = NULL;
@@ -190,7 +130,6 @@ int main(int argc, char *argv[]) {
     int bc_start = 0;
     int bc_len = 18;
     int num_threads = 1;
-    bool paired_end_mode = false;
     bool no_alignment = false;
     pthread_t* threads = NULL;
     WorkerArgs* thread_args = NULL;
@@ -202,13 +141,11 @@ int main(int argc, char *argv[]) {
     // Command line options
     static struct option long_options[] = {
         {"in", required_argument, 0, 'a'},
-        {"in-pairs", required_argument, 0, 'b'},
         {"bc-start", required_argument, 0, 's'},
         {"bc-len", required_argument, 0, 'l'},
         {"max-len", required_argument, 0, 'm'},
         {"gap", required_argument, 0, 'g'},
         {"out", required_argument, 0, '1'},
-        {"out-pairs", required_argument, 0, '2'},
         {"threads", required_argument, 0, 't'},
         {"no-alignment", no_argument, 0, 'n'},
         {0, 0, 0, 0}
@@ -219,7 +156,6 @@ int main(int argc, char *argv[]) {
     while ((c = getopt_long_only(argc, argv, "", long_options, &option_index)) != -1) {
         switch (c) {
             case 'a': in1_file = optarg; break;
-            case 'b': in2_file = optarg; paired_end_mode = true; break;
             case 's': bc_start = atoi(optarg); break;
             case 'l': bc_len = atoi(optarg); break;
             case 'm': max_line_len = atoi(optarg); break;
@@ -238,11 +174,6 @@ int main(int argc, char *argv[]) {
         print_usage(argv[0]);
     }
 
-    if (paired_end_mode && !in2_file) {
-        fprintf(stderr, "Error: Entered paired-end mode, but read2 file was not read\n");
-        print_usage(argv[0]);
-    }
-
     if (num_threads < 1) {
         fprintf(stderr, "Error: Invalid thread count\n");
         exit(EXIT_FAILURE);
@@ -250,38 +181,20 @@ int main(int argc, char *argv[]) {
 
     // Print run information
     fprintf(stderr, "\nInitializing sequence processing...\n");
-    fprintf(stderr, "Mode: %s\n", paired_end_mode ? "Paired-end" : "Single-end");
     fprintf(stderr, "Threads: %d\n", num_threads);
     fprintf(stderr, "Input file(s):\n  Read 1: %s\n", in1_file);
-    if (paired_end_mode) {
-        fprintf(stderr, "  Read 2: %s\n", in2_file);
-    }
     fprintf(stderr, "Output file(s):\n  Read 1: %s\n", out1_file);
-    if (paired_end_mode) {
-        fprintf(stderr, "  Read 2: %s\n", out2_file);
-    }
     fprintf(stderr, "\n");
 
     // Initialize input files
     FILE* fwd_file = fopen(in1_file, "r");
-    FILE* rev_file = paired_end_mode ? fopen(in2_file, "r") : NULL;
-    if (!fwd_file || (paired_end_mode && !rev_file)) {
-        perror("Error opening input files");
-        cleanup_on_error(fwd_file, rev_file, &output, threads, thread_args);
-    }
 
     // Set global pointers for fatal cleanup helper
     g_fwd_file = fwd_file;
-    g_rev_file = rev_file;
     g_output_ptr = &output;
 
     // Initialize output files
     output.fwd_out = fopen(out1_file, "w");
-    output.rev_out = paired_end_mode ? fopen(out2_file, "w") : NULL;
-    if (!output.fwd_out || (paired_end_mode && !output.rev_out)) {
-        perror("Error opening output files");
-        cleanup_on_error(fwd_file, rev_file, &output, threads, thread_args);
-    }
 
     // Create worker threads
     threads = malloc(num_threads * sizeof(pthread_t));
@@ -301,7 +214,6 @@ int main(int argc, char *argv[]) {
         thread_args[i].queue = &work_queue;
         thread_args[i].output = &output;
         thread_args[i].thread_id = i;
-        thread_args[i].paired_end_mode = paired_end_mode;
         thread_args[i].no_alignment = no_alignment;
         if (pthread_create(&threads[i], NULL, worker_thread, &thread_args[i]) != 0) {
             fatal_alloc("Failed to create worker thread");
@@ -311,7 +223,6 @@ int main(int argc, char *argv[]) {
     // Producer: Read input files and create work
     BarcodeGroup* current_group = NULL;
     char line_fwd[max_line_len];
-    char line_rev[max_line_len];
 
     while (1) {
         // Check for end of file and read headers
@@ -321,39 +232,17 @@ int main(int argc, char *argv[]) {
             }
             break;
         }
-    
-        if (paired_end_mode && !fgets(line_rev, max_line_len, rev_file)) {
-            if (current_group) {
-                queue_push(&work_queue, current_group);
-            }
-            break;
-        }
 
         // Read sequences
         (void)fgets(line_fwd, max_line_len, fwd_file);
         char* fwd_seq = strndup(line_fwd, strcspn(line_fwd, "\n"));
-        
-        char* rev_seq = NULL;
-        if (paired_end_mode) {
-            (void)fgets(line_rev, max_line_len, rev_file);
-            rev_seq = strndup(line_rev, strcspn(line_rev, "\n"));
-        }
 
         // Skip '+' lines
         (void)fgets(line_fwd, max_line_len, fwd_file);
-        if (paired_end_mode) {
-            (void)fgets(line_rev, max_line_len, rev_file);
-        }
 
         // Read qualities
         (void)fgets(line_fwd, max_line_len, fwd_file);
         char* fwd_qual = strndup(line_fwd, strcspn(line_fwd, "\n"));
-
-        char* rev_qual = NULL;
-        if (paired_end_mode) {
-            (void)fgets(line_rev, max_line_len, rev_file);
-            rev_qual = strndup(line_rev, strcspn(line_rev, "\n"));
-        }
 
         // Extract barcode
         char bc[MAX_BARCODE_LEN];
@@ -371,13 +260,6 @@ int main(int argc, char *argv[]) {
             if (!current_group->fwd_reads) fatal_alloc("Failed to allocate fwd_reads");
             current_group->fwd_quals = malloc(sizeof(char*) * current_group->capacity);
             if (!current_group->fwd_quals) fatal_alloc("Failed to allocate fwd_quals");
-            if (paired_end_mode) {
-                current_group->rev_reads = malloc(sizeof(char*) * current_group->capacity);
-                current_group->rev_quals = malloc(sizeof(char*) * current_group->capacity);
-            } else {
-                current_group->rev_reads = NULL;
-                current_group->rev_quals = NULL;
-            }
         }
 
         if (strcmp(current_group->bc, bc) != 0) {
@@ -392,13 +274,6 @@ int main(int argc, char *argv[]) {
             if (!current_group->fwd_reads) fatal_alloc("Failed to allocate fwd_reads");
             current_group->fwd_quals = malloc(sizeof(char*) * current_group->capacity);
             if (!current_group->fwd_quals) fatal_alloc("Failed to allocate fwd_quals");
-            if (paired_end_mode) {
-                current_group->rev_reads = malloc(sizeof(char*) * current_group->capacity);
-                current_group->rev_quals = malloc(sizeof(char*) * current_group->capacity);
-            } else {
-                current_group->rev_reads = NULL;
-                current_group->rev_quals = NULL;
-            }
         }
 
         // Add to group
@@ -411,24 +286,10 @@ int main(int argc, char *argv[]) {
             tmp = realloc(current_group->fwd_quals, sizeof(char*) * current_group->capacity);
             if (!tmp) fatal_alloc("Failed to realloc fwd_quals");
             current_group->fwd_quals = tmp;
-
-            if (paired_end_mode) {
-                char** tmp2 = realloc(current_group->rev_reads, sizeof(char*) * current_group->capacity);
-                if (!tmp2) fatal_alloc("Failed to realloc rev_reads");
-                current_group->rev_reads = tmp2;
-
-                tmp2 = realloc(current_group->rev_quals, sizeof(char*) * current_group->capacity);
-                if (!tmp2) fatal_alloc("Failed to realloc rev_quals");
-                current_group->rev_quals = tmp2;
-            }
         }
 
         current_group->fwd_reads[current_group->count] = fwd_seq;
         current_group->fwd_quals[current_group->count] = fwd_qual;
-        if (paired_end_mode) {
-            current_group->rev_reads[current_group->count] = rev_seq;
-            current_group->rev_quals[current_group->count] = rev_qual;
-        }
         current_group->count++;
     }
 
@@ -453,9 +314,7 @@ int main(int argc, char *argv[]) {
     free(thread_args);
     
     fclose(fwd_file);
-    if (paired_end_mode) fclose(rev_file);
     fclose(output.fwd_out);
-    if (paired_end_mode) fclose(output.rev_out);
 
     // Print error rate statistics
     fprintf(stderr, "\nError rate statistics:\n");
@@ -465,160 +324,8 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-void process_barcode_paired(BarcodeGroup* group, char** fwd_entry, char** rev_entry, bool no_alignment) {
-    *fwd_entry = NULL;
-    *rev_entry = NULL;
-    // Step 0: Check group size and don't do full processing if not necessary
-    if(group->count == 0) return;
-    if(group->count == 1) {
-        // Format FASTQ entries
-        int fwd_len = snprintf(NULL, 0, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                              group->bc, group->count, group->fwd_reads[0], group->fwd_quals[0]) + 1;
-        int rev_len = snprintf(NULL, 0, "@rev_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                              group->bc, group->count, group->rev_reads[0], group->rev_quals[0]) + 1;
-        
-        *fwd_entry = malloc(fwd_len);
-        *rev_entry = malloc(rev_len);
-        snprintf(*fwd_entry, fwd_len, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                group->bc, group->count, group->fwd_reads[0], group->fwd_quals[0]);
-        snprintf(*rev_entry, rev_len, "@rev_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                group->bc, group->count, group->rev_reads[0], group->rev_quals[0]);
-        return;
-    }
-
-    // Step 1: Get max length of reads
-    int L_fwd = 0, L_rev = 0;
-    for(int i = 0; i < group->count; i++) {
-        int curr_fwd_len = strlen(group->fwd_reads[i]);
-        int curr_rev_len = strlen(group->rev_reads[i]);
-        if(curr_fwd_len > L_fwd) L_fwd = curr_fwd_len;
-        if(curr_rev_len > L_rev) L_rev = curr_rev_len;
-    }
-
-    // Step 2: Convert reads to arrays
-    SeqArray* fwd_arrays = malloc(group->count * sizeof(SeqArray));
-    if (!fwd_arrays) fatal_alloc("Failed to allocate fwd_arrays");
-    SeqArray* rev_arrays = malloc(group->count * sizeof(SeqArray));
-    if (!rev_arrays) fatal_alloc("Failed to allocate rev_arrays");
-    
-    for(int i=0; i<group->count; i++) {
-        fwd_arrays[i] = seq_to_array(group->fwd_reads[i], group->fwd_quals[i], L_fwd);
-        rev_arrays[i] = seq_to_array(group->rev_reads[i], group->rev_quals[i], L_rev);
-    }
-
-    // Step 3: Build unaligned consensus
-    SeqArray fwd_consensus = build_unaligned_consensus(fwd_arrays, group->count);
-    SeqArray rev_consensus = build_unaligned_consensus(rev_arrays, group->count);
-
-    // If no_alignment is set, skip compare/sort and merge, convert consensus directly
-    if (no_alignment) {
-        char *fwd_seq = NULL, *fwd_qual = NULL, *rev_seq = NULL, *rev_qual = NULL;
-        array_to_seq(&fwd_consensus, &fwd_seq, &fwd_qual);
-        array_to_seq(&rev_consensus, &rev_seq, &rev_qual);
-
-        // Format FASTQ entries
-        int fwd_len = snprintf(NULL, 0, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n",
-                              group->bc, group->count, fwd_seq, fwd_qual) + 1;
-        int rev_len = snprintf(NULL, 0, "@rev_read;bc=%s;count=%d\n%s\n+\n%s\n",
-                              group->bc, group->count, rev_seq, rev_qual) + 1;
-
-        *fwd_entry = malloc(fwd_len);
-        *rev_entry = malloc(rev_len);
-        snprintf(*fwd_entry, fwd_len, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n",
-                 group->bc, group->count, fwd_seq, fwd_qual);
-        snprintf(*rev_entry, rev_len, "@rev_read;bc=%s;count=%d\n%s\n+\n%s\n",
-                 group->bc, group->count, rev_seq, rev_qual);
-
-        // Cleanup
-        free(fwd_seq); free(fwd_qual); free(rev_seq); free(rev_qual);
-        free_seq_array(&fwd_consensus);
-        free_seq_array(&rev_consensus);
-        for(int i=0; i<group->count; i++) {
-            free_seq_array(&fwd_arrays[i]);
-            free_seq_array(&rev_arrays[i]);
-        }
-        free(fwd_arrays);
-        free(rev_arrays);
-        return;
-    }
-
-    // Step 4: Compare reads and sort
-    double* similarities = malloc(group->count * sizeof(double));
-    if (!similarities) fatal_alloc("Failed to allocate similarities");
-    IdxSim* pairs = malloc(group->count * sizeof(IdxSim));
-    if (!pairs) fatal_alloc("Failed to allocate pairs");
-
-    for(int i=0; i<group->count; i++) {
-        double fwd_sim = compare_seqs(&fwd_arrays[i], &fwd_consensus);
-        double rev_sim = compare_seqs(&rev_arrays[i], &rev_consensus);
-        similarities[i] = (fwd_sim + rev_sim);
-        pairs[i].idx = i;
-        pairs[i].sim = similarities[i];
-    }
-
-    qsort(pairs, group->count, sizeof(IdxSim), cmp_idxsim_desc);
-
-    int* indices = malloc(group->count * sizeof(int));
-    if (!indices) fatal_alloc("Failed to allocate indices");
-    for (int i = 0; i < group->count; ++i) indices[i] = pairs[i].idx;
-
-    free(pairs);
-
-    // Step 5: Merge sequences into consensus
-    SeqArray merged_fwd = create_seq_array(fwd_arrays[indices[0]].length);
-    SeqArray merged_rev = create_seq_array(rev_arrays[indices[0]].length);
-
-    memcpy(merged_fwd.positions, fwd_arrays[indices[0]].positions, 
-           fwd_arrays[indices[0]].length * sizeof(Position));
-    memcpy(merged_rev.positions, rev_arrays[indices[0]].positions, 
-           rev_arrays[indices[0]].length * sizeof(Position));
-    
-    for(int i=1; i<group->count; i++) {
-        SeqArray temp_fwd = merge_seqs(&merged_fwd, &fwd_arrays[indices[i]]);
-        SeqArray temp_rev = merge_seqs(&merged_rev, &rev_arrays[indices[i]]);
-        
-        free_seq_array(&merged_fwd);
-        free_seq_array(&merged_rev);
-        
-        merged_fwd = temp_fwd;
-        merged_rev = temp_rev;
-    }
-
-    // Step 6: Convert to FASTQ and print
-    char *fwd_seq, *fwd_qual, *rev_seq, *rev_qual;
-    array_to_seq(&merged_fwd, &fwd_seq, &fwd_qual);
-    array_to_seq(&merged_rev, &rev_seq, &rev_qual);
-
-    // Format FASTQ entries
-    int fwd_len = snprintf(NULL, 0, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                          group->bc, group->count, fwd_seq, fwd_qual) + 1;
-    int rev_len = snprintf(NULL, 0, "@rev_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-                          group->bc, group->count, rev_seq, rev_qual) + 1;
-    
-    *fwd_entry = malloc(fwd_len);
-    *rev_entry = malloc(rev_len);
-    snprintf(*fwd_entry, fwd_len, "@fwd_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-            group->bc, group->count, fwd_seq, fwd_qual);
-    snprintf(*rev_entry, rev_len, "@rev_read;bc=%s;count=%d\n%s\n+\n%s\n", 
-            group->bc, group->count, rev_seq, rev_qual);
-
-    // Cleanup
-    free(fwd_seq); free(fwd_qual); free(rev_seq); free(rev_qual);
-    free(similarities); 
-    free(indices);
-    free_seq_array(&fwd_consensus);
-    free_seq_array(&rev_consensus);
-    free_seq_array(&merged_fwd);
-    free_seq_array(&merged_rev);
-    for(int i=0; i<group->count; i++) {
-        free_seq_array(&fwd_arrays[i]);
-        free_seq_array(&rev_arrays[i]);
-    }
-    free(fwd_arrays);
-    free(rev_arrays);
-}
-
-void process_barcode_single(BarcodeGroup* group, char** fwd_entry, bool no_alignment) {
+// Get reads associated with a barcode, merge, and print
+void process_barcode(BarcodeGroup* group, char** fwd_entry, bool no_alignment) {
     *fwd_entry = NULL;
     
     // Step 0: Check group size and don't do full processing if not necessary
@@ -651,7 +358,7 @@ void process_barcode_single(BarcodeGroup* group, char** fwd_entry, bool no_align
     // Step 3: Build unaligned consensus
     SeqArray fwd_consensus = build_unaligned_consensus(fwd_arrays, group->count);
 
-    // If no_alignment is set, skip compare/sort and merge, convert consensus directly
+    // If --no-alignment option is set, skip compare/sort and merge, convert consensus directly
     if (no_alignment) {
         char *fwd_seq = NULL, *fwd_qual = NULL;
         array_to_seq(&fwd_consensus, &fwd_seq, &fwd_qual);
@@ -732,326 +439,104 @@ void process_barcode_single(BarcodeGroup* group, char** fwd_entry, bool no_align
     free(fwd_arrays);
 }
 
-// Initialize work queue
-void init_work_queue(WorkQueue* queue) {
-    queue->head = NULL;
-    queue->tail = NULL;
-    queue->size = 0;
-    queue->producer_done = false;
-    pthread_mutex_init(&queue->mutex, NULL);
-    pthread_cond_init(&queue->not_empty, NULL);
-    pthread_cond_init(&queue->not_full, NULL);
-}
+// Merge all reads associated with one barcode
+SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
+    // seq1 = reference = consensus
+    // seq2 = query = individual read
 
-// Add work to queue
-void queue_push(WorkQueue* queue, BarcodeGroup* group) {
-    WorkQueueNode* node = malloc(sizeof(WorkQueueNode));
-    if (!node) {
-        fatal_alloc("Failed to allocate WorkQueueNode");
-    }
-    node->group = group;
-    node->next = NULL;
+    int trace_len = 0;
+    int *trace = NULL;
 
-    pthread_mutex_lock(&queue->mutex);
-    
-    // Wait if queue is too full (prevent memory explosion)
-    while (queue->size >= 10000) {
-        pthread_cond_wait(&queue->not_full, &queue->mutex);
-    }
-    
-    if (queue->tail) {
-        queue->tail->next = node;
+    int len1 = seq1->length;
+    int len2 = seq2->length;
+    int longer = (len1 > len2) ? len1 : len2;
+
+    // Use full alignment for very short sequences
+    if (longer <= 50) {
+        trace = align_arrays(seq1, seq2, &trace_len);
     } else {
-        queue->head = node;
-    }
-    queue->tail = node;
-    queue->size++;
-    
-    pthread_cond_signal(&queue->not_empty);
-    pthread_mutex_unlock(&queue->mutex);
-}
-
-// Get work from queue
-BarcodeGroup* queue_pop(WorkQueue* queue) {
-    pthread_mutex_lock(&queue->mutex);
-    
-    while (queue->size == 0) {
-        if (queue->producer_done) {
-            pthread_mutex_unlock(&queue->mutex);
-            return NULL;
-        }
-        pthread_cond_wait(&queue->not_empty, &queue->mutex);
-    }
-    
-    WorkQueueNode* node = queue->head;
-    BarcodeGroup* group = node->group;
-    queue->head = node->next;
-    if (!queue->head) {
-        queue->tail = NULL;
-    }
-    queue->size--;
-    
-    pthread_cond_signal(&queue->not_full);
-    pthread_mutex_unlock(&queue->mutex);
-    
-    free(node);
-    return group;
-}
-
-// Worker thread function
-void* worker_thread(void* arg) {
-    WorkerArgs* args = (WorkerArgs*)arg;
-    WorkQueue* queue = args->queue;
-    OutputFiles* output = args->output;
-    bool paired_end_mode = args->paired_end_mode;
-    bool no_alignment = args->no_alignment;
-
-    while (true) {
-        BarcodeGroup* group = queue_pop(queue);
-        if (!group) {
-            break;  // Queue is empty and producer is done
-        }
-        
-        if (paired_end_mode) {
-            char *fwd_entry, *rev_entry;
-            process_barcode_paired(group, &fwd_entry, &rev_entry, no_alignment);
-            
-            if (fwd_entry && rev_entry) {
-                pthread_mutex_lock(&output->mutex);
-                fprintf(output->fwd_out, "%s", fwd_entry);
-                fprintf(output->rev_out, "%s", rev_entry);
-                pthread_mutex_unlock(&output->mutex);
+        // Try banded alignments, doubling max_phase_diff until success or limit reached
+        int max_phase_diff = (int)floor(sqrt((double)longer * 0.04));
+        if (max_phase_diff < 1) max_phase_diff = 1;
+        while (true) {
+            trace = align_arrays_band(seq1, seq2, &trace_len, max_phase_diff);
+            if (trace != NULL && trace_len > 0) {
+                // banded alignment succeeded and was guaranteed optimal
+                break;
             }
-            
-            free(fwd_entry);
-            free(rev_entry);
-        } else {
-            char *fwd_entry;
-            process_barcode_single(group, &fwd_entry, no_alignment);
-            
-            if (fwd_entry) {
-                pthread_mutex_lock(&output->mutex);
-                fprintf(output->fwd_out, "%s", fwd_entry);
-                pthread_mutex_unlock(&output->mutex);
+            // If band returned NULL but trace_len == 0 (no band cells) or trace == NULL,
+            // we'll try increasing band unless we've exceeded allowed limit.
+            if (max_phase_diff > (longer / 2)) {
+                // Give up on banded approach
+                break;
             }
-            
-            free(fwd_entry);
-        }
-        
-        free_barcode_group(group);
-    }
-    
-    return NULL;
-}
-
-
-
-// Function to convert a sequence and quality string into a 5xL array
-SeqArray seq_to_array(const char* seq, const char* qual, int length) {
-    // Initialize array
-    SeqArray array = create_seq_array(length);
-
-    size_t seqlen = strlen(seq);
-    size_t quallen = qual ? strlen(qual) : 0;
-    size_t n = seqlen < (size_t)length ? seqlen : (size_t)length;
-    
-    // Fill the array
-    for (size_t i = 0; i < n; i++) {
-        // Check valid base
-        char base = seq[i];
-        if (base == 'A' || base == 'C' || base == 'G' || base == 'T') {
-            // Convert to adjusted quality score with bounds (guard qual length)
-            int adjusted_qual_score = 0;
-            if (i >= quallen) {
-                adjusted_qual_score = 0;
-            } else if (qual[i] < 33) {
-                adjusted_qual_score = 0;
-            } else if (qual[i] > 73) {
-                adjusted_qual_score = 42;
-            } else {
-                adjusted_qual_score = q_adj[qual[i] - 33];
-            }
-            // Assign quality score to the corresponding base
-            array.positions[i].scores[basemap[(int)base]] = adjusted_qual_score;
-        }
-    }
-    return array;
-}
-
-// Compare two positions using scaled cosine similarity
-double compare_positions(const Position* vec1, const Position* vec2) {
-    double dot = 0.0, mag1 = 0.0, mag2 = 0.0;
-    
-    for (int i = 0; i < VECTOR_LENGTH; i++) {
-        double v1 = vec1->scores[i];
-        double v2 = vec2->scores[i];
-        dot += v1 * v2;
-        mag1 += v1 * v1;
-        mag2 += v2 * v2;
-    }
-    
-    // heuristics to speed up return
-    if (mag1 == 0.0 || mag2 == 0.0) return 0.0; // empty vectors
-
-    // calculate cosine similarity
-    return (2.0 * (dot / (sqrt(mag1) * sqrt(mag2)))) - 1.0;
-}
-
-// Compare two sequences by summed position similarity
-double compare_seqs(const SeqArray* a, const SeqArray* b) {
-    if(a->length != b->length || a->length == 0) return 0.0;
-    
-    double total = 0.0;
-    for(int i=0; i<a->length; i++) {
-        total += compare_positions(&a->positions[i], &b->positions[i]);
-    }
-    return total;
-}
-
-// Build consensus without alignment by summing position scores across sequences
-SeqArray build_unaligned_consensus(SeqArray* sequences, int count) {
-    if(count == 0) return create_seq_array(0);
-    
-    int length = sequences[0].length;
-    SeqArray consensus = create_seq_array(length);
-    
-    for(int i=0; i<count; i++) {
-        for(int pos=0; pos<length; pos++) {
-            for(int base=0; base<5; base++) {
-                consensus.positions[pos].scores[base] += 
-                    sequences[i].positions[pos].scores[base];
+            max_phase_diff *= 2;
+            if (max_phase_diff > (longer / 2)) {
+                max_phase_diff = (longer / 2) + 1; // ensure loop termination
             }
         }
-    }
-    return consensus;
-}
 
-
-
-// Global alignment with traceback
-int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
-
-    const float NEG_INF = -1e30f;
-    int ylen = query->length + 1; // rows (y)
-    int xlen = ref->length + 1;   // cols (x)
-
-    if (out_len) *out_len = 0;
-
-    if (ylen <= 0 || xlen <= 0) return NULL;
-
-    size_t cells = (size_t)ylen * (size_t)xlen;
-
-    // Allocate contiguous blocks
-    float *score_block = malloc(cells * sizeof(float));
-    int *trace_block = malloc(cells * sizeof(int));
-    if (!score_block || !trace_block) {
-        free(score_block);
-        free(trace_block);
-        return NULL;
-    }
-
-    // convenience macro for indexing
-    #define IDX(y,x) ((size_t)(y) * (size_t)xlen + (size_t)(x))
-
-    // Initialize score and trace
-    for (size_t i = 0; i < cells; i++) {
-        score_block[i] = NEG_INF;
-        trace_block[i] = 0;
-    }
-
-    float g = (float)gap_pen; // linear gap penalty
-
-    // (0,0)
-    score_block[IDX(0,0)] = 0.0f;
-    trace_block[IDX(0,0)] = 0;
-
-    // First row (gaps in query -> deletions)
-    for (int x = 1; x < xlen; x++) {
-        score_block[IDX(0,x)] = score_block[IDX(0,x-1)] + g;
-        trace_block[IDX(0,x)] = 2; // deletion (gap in query)
-    }
-
-    // First column (gaps in reference -> insertions)
-    for (int y = 1; y < ylen; y++) {
-        score_block[IDX(y,0)] = score_block[IDX(y-1,0)] + g;
-        trace_block[IDX(y,0)] = 3; // insertion (gap in reference)
-    }
-
-    // Fill DP; compute match on-the-fly
-    for (int y = 1; y < ylen; y++) {
-        for (int x = 1; x < xlen; x++) {
-            float best = NEG_INF;
-            int t = 0;
-
-            // Diagonal (match/mismatch)
-            float diag = NEG_INF;
-            double mscore_d = compare_positions(&ref->positions[x-1], &query->positions[y-1]);
-            diag = score_block[IDX(y-1,x-1)] + (float)mscore_d;
-            best = diag;
-            t = 1;
-
-            // Left (deletion: gap in query)
-            float g_left = g;
-            // if consensus is gapped, relax the penalty against putting a gap in the query
-            if (ref->positions[x-1].scores[4] > 0) {
-                int total_ref = 0;
-                for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
-                // total_ref > 0 is guaranteed because gap count > 0 and scores are non-negative
-                float gap_frac_ref = (float)ref->positions[x-1].scores[4] / (float)total_ref;
-                g_left = g * (1.0f - gap_frac_ref);
-            }
-            float left = score_block[IDX(y,x-1)] + g_left;
-            if (left > best) { best = left; t = 2; }
-
-            // Up (insertion: gap in reference)
-            float up = score_block[IDX(y-1,x)] + g;
-            if (up > best) { best = up; t = 3; }
-
-            score_block[IDX(y,x)] = best;
-            trace_block[IDX(y,x)] = t;
+        // If banded alignment did not produce a guaranteed-optimal traceback, fall back
+        if (trace == NULL || trace_len <= 0) {
+            trace = align_arrays(seq1, seq2, &trace_len);
         }
     }
 
-    // Traceback (same semantics as previous implementation)
-    int max_trace_len = query->length + ref->length + 1;
-    int *traceback = malloc(max_trace_len * sizeof(int));
-    if (!traceback) {
-        free(score_block);
-        free(trace_block);
-        return NULL;
+    SeqArray merged = create_seq_array(trace_len);
+    int pos1 = 0, pos2 = 0;
+
+    for(int i=0; i<trace_len; i++) {
+        Position p1 = {0}, p2 = {0};
+
+        if (pos1 < seq1->length) {
+            memcpy(p1.scores, seq1->positions[pos1].scores, sizeof(p1.scores));
+        }
+        if (pos2 < seq2->length) {
+            memcpy(p2.scores, seq2->positions[pos2].scores, sizeof(p2.scores));
+        }
+
+        switch(trace[i]) {
+            case 1:  // match
+                for(int j=0; j<5; j++) {
+                    merged.positions[i].scores[j] = p1.scores[j] + p2.scores[j];
+                }
+                pos1++;
+                pos2++;
+                break;
+            case 2:  // gap in query
+                if (pos1 < seq1->length) {
+                    memcpy(merged.positions[i].scores, p1.scores, 5*sizeof(int));
+                    for(int j=0; j<5; j++) {
+                        merged.positions[i].scores[4] += p2.scores[j];
+                    }
+                }
+                pos1++;
+                break;
+            case 3:  // gap in reference
+                if (pos2 < seq2->length) {
+                    memcpy(merged.positions[i].scores, p2.scores, 5*sizeof(int));
+                    for(int j=0; j<5; j++) {
+                        merged.positions[i].scores[4] += p1.scores[j];
+                    }
+                }
+                pos2++;
+                break;
+            default:
+                // any unexpected code: treat as mismatch (advance both)
+                for(int j=0; j<5; j++) {
+                    merged.positions[i].scores[j] = p1.scores[j] + p2.scores[j];
+                }
+                pos1++; pos2++;
+                break;
+        }
     }
-    int idx = 0;
-    int x = xlen - 1;
-    int y = ylen - 1;
 
-    while (x > 0 && y > 0) {
-        int tv = trace_block[IDX(y,x)];
-        traceback[idx++] = tv;
-        if (tv == 1) { x--; y--; }
-        else if (tv == 2) { x--; }
-        else { y--; }
-    }
-    while (x > 0) { traceback[idx++] = 2; x--; }
-    while (y > 0) { traceback[idx++] = 3; y--; }
-
-    // reverse traceback
-    for (int i = 0; i < idx/2; i++) {
-        int tmp = traceback[i];
-        traceback[i] = traceback[idx - i - 1];
-        traceback[idx - i - 1] = tmp;
-    }
-    if (out_len) *out_len = idx;
-
-    // cleanup
-    free(score_block);
-    free(trace_block);
-
-    #undef IDX
-
-    return traceback;
+    free(trace);
+    return merged;
 }
 
- int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len, int max_phase_diff) {
+// Global alignment within a band
+int* align_arrays_band(const SeqArray* ref, const SeqArray* query, int *out_len, int max_phase_diff) {
 
     const float NEG_INF = -1e30f;
     int m = ref->length;    // x dimension (reference)
@@ -1300,102 +785,162 @@ int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
     return traceback;
 }
 
-SeqArray merge_seqs(const SeqArray* seq1, const SeqArray* seq2) {
-    // seq1 = reference = consensus
-    // seq2 = query = individual read
+// True global alignment
+int* align_arrays(const SeqArray* ref, const SeqArray* query, int *out_len) {
 
-    int trace_len = 0;
-    int *trace = NULL;
+    const float NEG_INF = -1e30f;
+    int ylen = query->length + 1; // rows (y)
+    int xlen = ref->length + 1;   // cols (x)
 
-    int len1 = seq1->length;
-    int len2 = seq2->length;
-    int longer = (len1 > len2) ? len1 : len2;
+    if (out_len) *out_len = 0;
 
-    // Use full alignment for very short sequences
-    if (longer <= 50) {
-        trace = align_arrays(seq1, seq2, &trace_len);
-    } else {
-        // Try banded alignments, doubling max_phase_diff until success or limit reached
-        int max_phase_diff = (int)floor(sqrt((double)longer * 0.04));
-        if (max_phase_diff < 1) max_phase_diff = 1;
-        while (true) {
-            trace = align_arrays_band(seq1, seq2, &trace_len, max_phase_diff);
-            if (trace != NULL && trace_len > 0) {
-                // banded alignment succeeded and was guaranteed optimal
-                break;
+    if (ylen <= 0 || xlen <= 0) return NULL;
+
+    size_t cells = (size_t)ylen * (size_t)xlen;
+
+    // Allocate contiguous blocks
+    float *score_block = malloc(cells * sizeof(float));
+    int *trace_block = malloc(cells * sizeof(int));
+    if (!score_block || !trace_block) {
+        free(score_block);
+        free(trace_block);
+        return NULL;
+    }
+
+    // convenience macro for indexing
+    #define IDX(y,x) ((size_t)(y) * (size_t)xlen + (size_t)(x))
+
+    // Initialize score and trace
+    for (size_t i = 0; i < cells; i++) {
+        score_block[i] = NEG_INF;
+        trace_block[i] = 0;
+    }
+
+    float g = (float)gap_pen; // linear gap penalty
+
+    // (0,0)
+    score_block[IDX(0,0)] = 0.0f;
+    trace_block[IDX(0,0)] = 0;
+
+    // First row (gaps in query -> deletions)
+    for (int x = 1; x < xlen; x++) {
+        score_block[IDX(0,x)] = score_block[IDX(0,x-1)] + g;
+        trace_block[IDX(0,x)] = 2; // deletion (gap in query)
+    }
+
+    // First column (gaps in reference -> insertions)
+    for (int y = 1; y < ylen; y++) {
+        score_block[IDX(y,0)] = score_block[IDX(y-1,0)] + g;
+        trace_block[IDX(y,0)] = 3; // insertion (gap in reference)
+    }
+
+    // Fill DP; compute match on-the-fly
+    for (int y = 1; y < ylen; y++) {
+        for (int x = 1; x < xlen; x++) {
+            float best = NEG_INF;
+            int t = 0;
+
+            // Diagonal (match/mismatch)
+            float diag = NEG_INF;
+            double mscore_d = compare_positions(&ref->positions[x-1], &query->positions[y-1]);
+            diag = score_block[IDX(y-1,x-1)] + (float)mscore_d;
+            best = diag;
+            t = 1;
+
+            // Left (deletion: gap in query)
+            float g_left = g;
+            // if consensus is gapped, relax the penalty against putting a gap in the query
+            if (ref->positions[x-1].scores[4] > 0) {
+                int total_ref = 0;
+                for (int bb = 0; bb < 5; bb++) total_ref += ref->positions[x-1].scores[bb];
+                // total_ref > 0 is guaranteed because gap count > 0 and scores are non-negative
+                float gap_frac_ref = (float)ref->positions[x-1].scores[4] / (float)total_ref;
+                g_left = g * (1.0f - gap_frac_ref);
             }
-            // If band returned NULL but trace_len == 0 (no band cells) or trace == NULL,
-            // we'll try increasing band unless we've exceeded allowed limit.
-            if (max_phase_diff > (longer / 2)) {
-                // Give up on banded approach
-                break;
-            }
-            max_phase_diff *= 2;
-            if (max_phase_diff > (longer / 2)) {
-                max_phase_diff = (longer / 2) + 1; // ensure loop termination
-            }
-        }
+            float left = score_block[IDX(y,x-1)] + g_left;
+            if (left > best) { best = left; t = 2; }
 
-        // If banded alignment did not produce a guaranteed-optimal traceback, fall back
-        if (trace == NULL || trace_len <= 0) {
-            trace = align_arrays(seq1, seq2, &trace_len);
+            // Up (insertion: gap in reference)
+            float up = score_block[IDX(y-1,x)] + g;
+            if (up > best) { best = up; t = 3; }
+
+            score_block[IDX(y,x)] = best;
+            trace_block[IDX(y,x)] = t;
         }
     }
 
-    SeqArray merged = create_seq_array(trace_len);
-    int pos1 = 0, pos2 = 0;
-
-    for(int i=0; i<trace_len; i++) {
-        Position p1 = {0}, p2 = {0};
-
-        if (pos1 < seq1->length) {
-            memcpy(p1.scores, seq1->positions[pos1].scores, sizeof(p1.scores));
-        }
-        if (pos2 < seq2->length) {
-            memcpy(p2.scores, seq2->positions[pos2].scores, sizeof(p2.scores));
-        }
-
-        switch(trace[i]) {
-            case 1:  // match
-                for(int j=0; j<5; j++) {
-                    merged.positions[i].scores[j] = p1.scores[j] + p2.scores[j];
-                }
-                pos1++;
-                pos2++;
-                break;
-            case 2:  // gap in query
-                if (pos1 < seq1->length) {
-                    memcpy(merged.positions[i].scores, p1.scores, 5*sizeof(int));
-                    for(int j=0; j<5; j++) {
-                        merged.positions[i].scores[4] += p2.scores[j];
-                    }
-                }
-                pos1++;
-                break;
-            case 3:  // gap in reference
-                if (pos2 < seq2->length) {
-                    memcpy(merged.positions[i].scores, p2.scores, 5*sizeof(int));
-                    for(int j=0; j<5; j++) {
-                        merged.positions[i].scores[4] += p1.scores[j];
-                    }
-                }
-                pos2++;
-                break;
-            default:
-                // any unexpected code: treat as mismatch (advance both)
-                for(int j=0; j<5; j++) {
-                    merged.positions[i].scores[j] = p1.scores[j] + p2.scores[j];
-                }
-                pos1++; pos2++;
-                break;
-        }
+    // Traceback (same semantics as previous implementation)
+    int max_trace_len = query->length + ref->length + 1;
+    int *traceback = malloc(max_trace_len * sizeof(int));
+    if (!traceback) {
+        free(score_block);
+        free(trace_block);
+        return NULL;
     }
+    int idx = 0;
+    int x = xlen - 1;
+    int y = ylen - 1;
 
-    free(trace);
-    return merged;
+    while (x > 0 && y > 0) {
+        int tv = trace_block[IDX(y,x)];
+        traceback[idx++] = tv;
+        if (tv == 1) { x--; y--; }
+        else if (tv == 2) { x--; }
+        else { y--; }
+    }
+    while (x > 0) { traceback[idx++] = 2; x--; }
+    while (y > 0) { traceback[idx++] = 3; y--; }
+
+    // reverse traceback
+    for (int i = 0; i < idx/2; i++) {
+        int tmp = traceback[i];
+        traceback[i] = traceback[idx - i - 1];
+        traceback[idx - i - 1] = tmp;
+    }
+    if (out_len) *out_len = idx;
+
+    // cleanup
+    free(score_block);
+    free(trace_block);
+
+    #undef IDX
+
+    return traceback;
 }
 
-// Convert consensus array to sequence and quality strings
+// Convert a sequence and quality string into a 5xL array
+SeqArray seq_to_array(const char* seq, const char* qual, int length) {
+    // Initialize array
+    SeqArray array = create_seq_array(length);
+
+    size_t seqlen = strlen(seq);
+    size_t quallen = qual ? strlen(qual) : 0;
+    size_t n = seqlen < (size_t)length ? seqlen : (size_t)length;
+    
+    // Fill the array
+    for (size_t i = 0; i < n; i++) {
+        // Check valid base
+        char base = seq[i];
+        if (base == 'A' || base == 'C' || base == 'G' || base == 'T') {
+            // Convert to adjusted quality score with bounds (guard qual length)
+            int adjusted_qual_score = 0;
+            if (i >= quallen) {
+                adjusted_qual_score = 0;
+            } else if (qual[i] < 33) {
+                adjusted_qual_score = 0;
+            } else if (qual[i] > 73) {
+                adjusted_qual_score = 42;
+            } else {
+                adjusted_qual_score = q_adj[qual[i] - 33];
+            }
+            // Assign quality score to the corresponding base
+            array.positions[i].scores[basemap[(int)base]] = adjusted_qual_score;
+        }
+    }
+    return array;
+}
+
+// Convert consensus array back to a sequence + quality
 void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out) {
     int out_pos = 0;
     *seq_out = malloc(array->length + 1);
@@ -1502,22 +1047,197 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out) {
     *qual_out = realloc(*qual_out, out_pos + 1);
 }
 
+// Compare two positions using scaled cosine similarity
+double compare_positions(const Position* vec1, const Position* vec2) {
+    double dot = 0.0, mag1 = 0.0, mag2 = 0.0;
+    
+    for (int i = 0; i < VECTOR_LENGTH; i++) {
+        double v1 = vec1->scores[i];
+        double v2 = vec2->scores[i];
+        dot += v1 * v2;
+        mag1 += v1 * v1;
+        mag2 += v2 * v2;
+    }
+    
+    // heuristics to speed up return
+    if (mag1 == 0.0 || mag2 == 0.0) return 0.0; // empty vectors
+
+    // calculate cosine similarity
+    return (2.0 * (dot / (sqrt(mag1) * sqrt(mag2)))) - 1.0;
+}
+
+// Compare two sequences by summed position similarity
+double compare_seqs(const SeqArray* a, const SeqArray* b) {
+    if(a->length != b->length || a->length == 0) return 0.0;
+    
+    double total = 0.0;
+    for(int i=0; i<a->length; i++) {
+        total += compare_positions(&a->positions[i], &b->positions[i]);
+    }
+    return total;
+}
+
+// Build consensus without alignment by summing position scores across sequences
+SeqArray build_unaligned_consensus(SeqArray* sequences, int count) {
+    if(count == 0) return create_seq_array(0);
+    
+    int length = sequences[0].length;
+    SeqArray consensus = create_seq_array(length);
+    
+    for(int i=0; i<count; i++) {
+        for(int pos=0; pos<length; pos++) {
+            for(int base=0; base<5; base++) {
+                consensus.positions[pos].scores[base] += 
+                    sequences[i].positions[pos].scores[base];
+            }
+        }
+    }
+    return consensus;
+}
+
+// Organize workers
+// Initialize work queue
+void init_work_queue(WorkQueue* queue) {
+    queue->head = NULL;
+    queue->tail = NULL;
+    queue->size = 0;
+    queue->producer_done = false;
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->not_empty, NULL);
+    pthread_cond_init(&queue->not_full, NULL);
+}
+
+// Add work to queue
+void queue_push(WorkQueue* queue, BarcodeGroup* group) {
+    WorkQueueNode* node = malloc(sizeof(WorkQueueNode));
+    if (!node) {
+        fatal_alloc("Failed to allocate WorkQueueNode");
+    }
+    node->group = group;
+    node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+    
+    // Wait if queue is too full (prevent memory explosion)
+    while (queue->size >= 10000) {
+        pthread_cond_wait(&queue->not_full, &queue->mutex);
+    }
+    
+    if (queue->tail) {
+        queue->tail->next = node;
+    } else {
+        queue->head = node;
+    }
+    queue->tail = node;
+    queue->size++;
+    
+    pthread_cond_signal(&queue->not_empty);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+// Get work from queue
+BarcodeGroup* queue_pop(WorkQueue* queue) {
+    pthread_mutex_lock(&queue->mutex);
+    
+    while (queue->size == 0) {
+        if (queue->producer_done) {
+            pthread_mutex_unlock(&queue->mutex);
+            return NULL;
+        }
+        pthread_cond_wait(&queue->not_empty, &queue->mutex);
+    }
+    
+    WorkQueueNode* node = queue->head;
+    BarcodeGroup* group = node->group;
+    queue->head = node->next;
+    if (!queue->head) {
+        queue->tail = NULL;
+    }
+    queue->size--;
+    
+    pthread_cond_signal(&queue->not_full);
+    pthread_mutex_unlock(&queue->mutex);
+    
+    free(node);
+    return group;
+}
+
+// Worker thread function
+void* worker_thread(void* arg) {
+    WorkerArgs* args = (WorkerArgs*)arg;
+    WorkQueue* queue = args->queue;
+    OutputFiles* output = args->output;
+    bool no_alignment = args->no_alignment;
+
+    while (true) {
+        BarcodeGroup* group = queue_pop(queue);
+        if (!group) {
+            break;  // Queue is empty and producer is done
+        }
+        char *fwd_entry;
+        process_barcode(group, &fwd_entry, no_alignment);
+        if (fwd_entry) {
+            pthread_mutex_lock(&output->mutex);
+            fprintf(output->fwd_out, "%s", fwd_entry);
+            pthread_mutex_unlock(&output->mutex);
+        }
+        free(fwd_entry);
+        free_barcode_group(group);
+    }
+    return NULL;
+}
+
+// Helper functions
+// Helper used locally to sort reads by similarity
+static int cmp_idxsim_desc(const void* a, const void* b) {
+    const IdxSim* A = a;
+    const IdxSim* B = b;
+    if (A->sim < B->sim) return 1;
+    if (A->sim > B->sim) return -1;
+    return 0;
+}
+
+// Helper function to create a new SeqArray
+SeqArray create_seq_array(int length) {
+    SeqArray arr;
+    arr.length = length;
+    arr.positions = calloc(length, sizeof(Position));
+    if (!arr.positions) {
+        fatal_alloc("Failed to allocate SeqArray");
+        arr.positions = NULL;
+        arr.length = 0;
+    }
+    return arr;
+}
+
+// Helper function to print message and perform global cleanup (will exit)
+void fatal_alloc(const char* where) {
+    fprintf(stderr, "Fatal error: %s\n", where);
+    cleanup_on_error(g_fwd_file, g_output_ptr, g_threads_ptr, g_thread_args_ptr);
+}
+
+// Helper function to avoid underflow on q-scores
+double log10addexp(double A, double B) {
+    // Ensure A is the larger of the two values to avoid underflow
+    if (A < B) {
+        double temp = A;
+        A = B;
+        B = temp;
+    }
+
+    // Compute log10(10^A + 10^B) = A + log10(1 + 10^(B - A))
+    double diff = B - A;
+    return A + log10(1.0 + pow(10.0, diff));
+}
+
 // Cleanup definitions
 void free_barcode_group(BarcodeGroup* group) {
     for (int i = 0; i < group->count; i++) {
         free(group->fwd_reads[i]);
         free(group->fwd_quals[i]);
-        if (group->rev_reads) {
-            free(group->rev_reads[i]);
-            free(group->rev_quals[i]);
-        }
     }
     free(group->fwd_reads);
     free(group->fwd_quals);
-    if (group->rev_reads) {
-        free(group->rev_reads);
-        free(group->rev_quals);
-    }
     free(group);
 }
 
@@ -1525,21 +1245,27 @@ void free_seq_array(SeqArray* arr) {
     free(arr->positions);
 }
 
-void free_matrix(Matrix mat) {
-    for (int i = 0; i < mat.rows; i++) {
-        free(mat.data[i]);
-    }
-    free(mat.data);
-}
-
-void cleanup_on_error(FILE* fwd_file, FILE* rev_file, OutputFiles* output, 
+void cleanup_on_error(FILE* fwd_file, OutputFiles* output, 
     pthread_t* threads, WorkerArgs* thread_args) {
     if (fwd_file) fclose(fwd_file);
-    if (rev_file) fclose(rev_file);
     if (output->fwd_out) fclose(output->fwd_out);
-    if (output->rev_out) fclose(output->rev_out);
     pthread_mutex_destroy(&output->mutex);
     free(threads);
     free(thread_args);
+    exit(EXIT_FAILURE);
+}
+
+// Print usage
+void print_usage(const char* program_name) {
+    fprintf(stderr, "Usage: %s [options]\n", program_name);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  --in file          Input FASTQ file 1 (required)\n");
+    fprintf(stderr, "  --bc-start int     Barcode start position (Zero-indexed, default: 0)\n");
+    fprintf(stderr, "  --bc-len int       Barcode length (default: 18)\n");
+    fprintf(stderr, "  --max-len int      Maximum read length (default: 1024)\n");
+    fprintf(stderr, "  --gap float        Gap penalty for alignment (default: -1.0)\n");
+    fprintf(stderr, "  --out file         Output file for consensus read 1\n");
+    fprintf(stderr, "  --threads int      Number of threads (default: 1)\n");
+    fprintf(stderr, "  --no-alignment     Skip alignment/merging; use unaligned consensus directly\n");
     exit(EXIT_FAILURE);
 }

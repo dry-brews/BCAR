@@ -50,21 +50,21 @@ detect_platform
 
 # Create/update conda environment
 echo "Setting up conda environment..."
-if conda env list | grep -q "bcar2-env"; then
+if conda env list | grep -q "bcar-env"; then
     echo "Environment exists, removing and recreating..."
-    conda env remove -n bcar2-env -y
+    conda env remove -n bcar-env -y
 fi
 
 echo "Creating environment..."
 conda env create -f environment.yml
 source activate base
-conda activate bcar2-env
-conda install -n bcar2-env -c conda-forge $COMPILER_PACKAGES -y
+conda activate bcar-env
+conda install -n bcar-env -c conda-forge $COMPILER_PACKAGES -y
 
 # Activate environment
 echo "Activating environment..."
 eval "$(conda shell.bash hook)"
-conda activate bcar2-env
+conda activate bcar-env
 
 # Set platform-specific compiler variables
 case "$PLATFORM" in
@@ -94,7 +94,7 @@ if make; then
     echo "Installation complete!"
     echo ""
     echo "To use this environment in the future, run:"
-    echo "conda activate bcar2-env"
+    echo "conda activate bcar-env"
 else
     echo "Compilation failed. Please check the error messages above."
     exit 1

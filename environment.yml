@@ -1,5 +1,5 @@
 
-name: bcar2-env
+name: bcar-env
 channels:
   - conda-forge
   - defaults
