@@ -86,12 +86,12 @@ Use the flags --in-pairs and --out-pairs for both the sorting and merging script
 #### Very many reads (>1 billion)
 In our experience, BCAR is sufficiently fast to handle hundreds of millions of reads within a few hours.
 If you have more reads than that and many CPUs, you can split your reads into smaller files to be processed in parallel.
-Suppose you sorted your dataset and determined it contains 105 million barcodes, and you have 10 CPUs to work with.
+Suppose you sorted your dataset and determined it contains 10.5 million barcodes, and you have 10 CPUs to work with.
 Run the following:
 ```bash
-python ./src/split_sorted_reads_into_chunks.py --in1 my_sorted_reads.fastq --bc-start 0 --bc-len 18 --size 105000
+python ./src/split_sorted_reads_into_chunks.py --in1 my_sorted_reads.fastq --bc-start 0 --bc-len 18 --size 1050000
 ```
-This will split your data into 10 files with 105,000 barcodes, each called my_sorted_reads_0001.fastq, etc., that you can process separately.
+This will split your data into 10 files with 1,050,000 barcodes, each called my_sorted_reads_0001.fastq, etc., that you can process separately.
 Afterwards, you can concatenate the BCAR output files.
 
 ## Contributing
