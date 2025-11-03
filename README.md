@@ -94,6 +94,12 @@ python ./src/split_sorted_reads_into_chunks.py --in1 my_sorted_reads.fastq --bc-
 This will split your data into 10 files with 1,050,000 barcodes, each called my_sorted_reads_0001.fastq, etc., that you can process separately.
 Afterwards, you can concatenate the BCAR output files.
 
+#### Many missense mutations, few indels
+BCAR defaults to a gap penalty of -1.0, which is appropriate when indel errors and missense errors are approximately equally abundant.
+On simulated reads, BCAR is quite accurate with this gap score across a broad range of indel and missense errors.
+However, if you have very frequent missense errors (>1%) and quite infrequent indel errors (<0.1%), then using a more severe gap penalty may improve accuracy.
+A gap penalty of -3.0 is probably appropriate for many datasets. 
+
 ## Contributing
 Contributions are welcome! Feel free to open issues or submit pull requests on the GitHub repository.
 
