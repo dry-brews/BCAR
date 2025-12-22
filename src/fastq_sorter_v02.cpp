@@ -471,7 +471,7 @@ public:
         current_batch_start = batch_end;
     }
 
-    std::cout << "\nTotal reads merged: " << merged_reads << std::endl;
+    // std::cout << "\nTotal reads merged: " << merged_reads << std::endl;
 }
 
     void sort() {
