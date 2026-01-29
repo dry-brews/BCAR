@@ -6,10 +6,10 @@ $(error Please run 'conda activate bcar-env' before using make)
 endif
 
 # Compiler settings
-CXX = $(CONDA_PREFIX)/bin/g++
-CC = $(CONDA_PREFIX)/bin/gcc
-CXXFLAGS = -O3 -w -I$(CONDA_PREFIX)/include
-CFLAGS = -O3 --std=gnu99 -w -I$(CONDA_PREFIX)/include
+#CXX = $(CONDA_PREFIX)/bin/g++
+#CC = $(CONDA_PREFIX)/bin/gcc
+CXXFLAGS = -O3 -std=c++17 -w -I$(CONDA_PREFIX)/include
+CFLAGS = -O3 -std=gnu99 -w -I$(CONDA_PREFIX)/include
 LDFLAGS = -L$(CONDA_PREFIX)/lib
 
 # Source directory

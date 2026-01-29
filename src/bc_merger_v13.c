@@ -133,7 +133,7 @@ int main(int argc, char *argv[]) {
     bool no_alignment = false;
     pthread_t* threads = NULL;
     WorkerArgs* thread_args = NULL;
-    OutputFiles output = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER};
+    OutputFiles output = {NULL, PTHREAD_MUTEX_INITIALIZER};
 
     WorkQueue work_queue;
     init_work_queue(&work_queue);
