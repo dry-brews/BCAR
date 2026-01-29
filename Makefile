@@ -10,7 +10,7 @@ endif
 #CC = $(CONDA_PREFIX)/bin/gcc
 CXXFLAGS = -O3 -std=c++17 -w -I$(CONDA_PREFIX)/include
 CFLAGS = -O3 -std=gnu99 -w -I$(CONDA_PREFIX)/include
-LDFLAGS = -L$(CONDA_PREFIX)/lib
+LDFLAGS = -L$(CONDA_PREFIX)/lib -Wl,-rpath,$(CONDA_PREFIX)/lib
 
 # Source directory
 SRC_DIR = src
