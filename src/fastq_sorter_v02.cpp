@@ -47,7 +47,9 @@ struct FastqEntry {
     std::string quality;
     
     std::string getBarcode(size_t start, size_t length) const {
-        return sequence.substr(start, length);
+        if (start >= sequence.size()) return std::string();
+        size_t avail = sequence.size() - start;
+        return sequence.substr(start, std::min(length, avail));
     }
     
     // Estimate memory usage of this entry
@@ -549,7 +551,7 @@ ProgramParams parseCommandLine(int argc, char* argv[]) {
     }
     
     if (args.find("--out-pairs") != args.end()) {
-        params.output2_file = args["--out2"];
+        params.output2_file = args["--out-pairs"];
     }
     
     if (args.find("--temp") != args.end()) {
