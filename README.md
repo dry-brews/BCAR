@@ -4,18 +4,11 @@ BCAR is a C/C++ tool designed to merge raw sequencing reads based on shared barc
 BCAR is designed to work on very large sequencing datasets that may not fit in memory.
 It will correct sequencing errors and produce a single consensus read for each barcode in your library.
 The Q-scores of the consensus are calculated from the quality scores of the input sequences.
-BCAR2 works in two phases to sort the fastq(s) and then merge the sorted reads by barcode.
-The first script (bcar_sort) uses a memory-efficient disk sorting algorithm to sort reads on the basis of their barcodes.
-The second script (bcar_merge) works with a sorted fastq file to generate consensus reads for each barcode. 
 
 ## Features
 - Uses a fast banded implementation of the Needleman-Wunsch algorithm generate an optimal global alignment between each read associated with a barcode and the consensus read for that barcode.
-- Your barcodes and their counts will appear in the headers of your consensus reads
-- Bayesian estimation of post-merged quality scores
-
-## Requirements
-- The barcode must occur at a **fixed location** in the read (the forward read for paired-end inputs). You are recommended to put the barcode at the **front** of the read, or else indels occuring before the barcode may cause the barcode to be mis-read. If you have a 3` barcode, you will probably want to reverse-complement your reads with a tool like [seqtk](https://github.com/lh3/seqtk), running BCAR on the reverse-complemented reads. 
-- If the barcode position is not fixed but is adjacent to a constant sequence, you can preprocess your data using tools like [CutAdapt](https://cutadapt.readthedocs.io/) to trim your reads, ensuring that the barcodes are at a fixed location.
+- The barcodes and diagnostic information for filtering appear in the headers of the consensus reads.
+- Bayesian estimation of post-merged quality scores.
 
 ## Installation
 
@@ -25,7 +18,10 @@ git clone https://github.com/dry-brews/BCAR.git
 ```
 
 ### 2. Build and Install
-Use the provided installation script to compile from source. Installation may take several minutes. Installation has been tested on Linux (Ubuntu) and MacOS. 
+Use the provided installation script to compile from source.
+Installation may take several minutes. Installation has been tested on Linux (Ubuntu) and MacOS.
+Windows users are recommended to use Windows Subsystem for Linux (WSL).
+
 ```bash
 cd BCAR
 chmod +x install.sh
@@ -42,30 +38,93 @@ chmod +x test_installation.sh
 #### Example
 ```bash
 ~/path/to/BCAR/bcar_sort --in my_trimmed_reads.fastq --bc-start 0 --bc-len 25 --temp . --out my_sorted_reads.fastq
-
-~/path/to/BCAR/bcar_merge --in my_sorted_reads.fastq --bc-start 0 --bc-len 25 --threads 12 --out my_merged_reads.fastq
 ```
 
-```bash
-Usage: ./bcar_sort [options]
-Options:
-  --in [file(s)]        input1.fastq,input2.fastq,...
-  --bc-start [int]      Barcode start position (Zero-indexed, default: 0)
-  --bc-len [int]        Barcode length (default: 18)
-  --out [file]          Output file for sorted read 1
-  --temp [dir]          Temporary directory for storing chunk files (recommend .)
-
-Usage: ./bcar_merge [options]
-Options:
-  --in [file]           Input FASTQ file 1
-  --out [file]          Output file for consensus reads
-  --bc-start [int]      Barcode start position (Zero-indexed, default: 0)
-  --bc-len [int]        Barcode length (default: 18)
-  --max-len [int]       Maximum read length (default: 131072)
-  --gap [float]         Gap penalty used during alignment (default:-1.0)
-  --threads [int]       Number of threads (default: 1)
-  --no-alignment        If added, skip alignment and make barcode with unaligned consensus 
 ```
+Usage: ./bcar [options]
+
+Required:
+  --in <file[,file,...]>           FASTQ input(s), comma-separated, gzip OK
+
+Barcode extraction (choose mode):
+  --bc-start <int>                 Fixed position start (0-based, default: 0)
+  --bc-len <int>                   Fixed barcode length (default: 18)
+  --context <pattern>              Context pattern with Ns for barcode positions
+  --max-context-mismatches <int>   Allowed mismatches in flanking seqs (default: 1)
+
+Clustering:
+  --max-mismatches <int>           Hamming distance radius (default: 1)
+  --max-bc-indels <int>            Max indels in clustering/extraction (0-2, default: 0)
+  --max-n <int>                    Max N bases in barcode (default: 2)
+
+Consensus:
+  --threads <int>                  Number of worker threads (default: 1)
+  --gap <float>                    Gap penalty for alignment (default: -1.0)
+  --max-len <int>                  Maximum read length (default: 100,000)
+  --no-alignment                   Skip alignment
+
+Output:
+  --out <file>                     Output file (default: bcar_out.fastq)
+  --fail <file>                    Reads where barcode not found (if context used)
+
+Resources:
+  --chunk-mem <bytes>              Sort buffer size (default: 4GB)
+  --max-open-files <int>           Max files during merge (default: 240)
+  --tmp-dir <path>                 Temp directory (default: .)
+
+```
+
+#### Inputs and outputs
+In many cases, raw reads can be put into bcar in fastq format without any pre-processing.
+However, if you have paired reads, you will likely want to merge your reads before passing them to BCAR, using a tool like [FLASH](https://github.com/ebiggers/flash).
+Additionally, if your barcoded reads have sequence that is expected to vary within a single barcode group, such as UMIs, phasing regions, indices, or any other variable sequence, you want to first trim these sequences off using a tool like [CutAdapt](https://cutadapt.readthedocs.io/en/stable/)
+Your input reads are likely to look something like this:
+```
+@AV240202:241115-32-PE300-RR-SW:2413661235:1:21304:2797:3178 2:N:0:GAGATTCC+GGCTCTGA
+CAGGACCAACAATATGGATT...
++
+NNMNNNNFNNNNNLNNNNNN...
+@AV240202:241115-32-PE300-RR-SW:2413661235:1:11501:1469:2622 2:N:0:TCCGGAGA+ATAGAGGC
+CGCGACGCACCGAAAAGGTT...
++
+=(F?7LHH7JK.CB/GJNDM...
+@AV240202:241115-32-PE300-RR-SW:2413661235:1:12104:1202:2303 2:N:0:ATTACTCG+TATAGCCT
+GCTCGTGGTTCGTTAGGGTT...
++
+LNMBNHMKM<N7MJMMLK>N...
+
+```
+The headers contain information about the sequencing run and the individual read.
+BCAR will output another fastq that looks like this:
+```
+@bc=148;count=25;minor_frac=0.085
+CAGGACCAACAATATGGATT...
++
+IIIIIIIIIIIIIIIIIIII...
+@bc=149;count=1
+CGCGACGCACCGAAAAGGTT...
++
+=(F?7LHH7JK.CB/GJNDM...
+@bc=150;count=10;minor_frac=0.400
+GCTCGTGGTTCGTTAGGGTT...
++
+IIIIIIIIIIIIIIIIIIII...
+```
+The headers here contain information about the barcode.
+bc=148 is a unique number assigned to each barcode group.
+If barcode clustering is used, there may be multiple raw barcode sequences assigned to this number.
+count=25 means that 25 raw reads were used to generate this consensus sequence.
+minor_frac=0.085 means that the evidence for the second-most-common base was no more than 8.5% of the total evidence at each position in the read.
+
+Notice there are a few possible outcomes.
+When you have many reads that all agree with each other (e.g., bc=148), you will have consistently maxed-out quality scores of I=40 and minor_frac will be low.
+When you have only a single read mapped to a given barcode (bc=149), BCAR will return exactly that read with its original quality scores, and minor_frac will not be reported because it is not meaningful.
+Sometimes, you may see consensus read with a high count and good quality scores, but minor_frac is high.
+This may indicate that the barcode is associated with multiple variants in your library.
+
+You will likely want to filter your consensus reads before using them to characterize your library.
+How you do so is up to you, and the best way to do so depends on your experimental and sequencing strategies.
+We have had success by filtering on a mean quality score >30, minimum count >1, and minor_frac<0.2.
 
 ### 4. Special Use Cases
 #### Very long reads (>100kb)
@@ -74,31 +133,11 @@ You should either pre-trim your reads to a maximum length or determine the longe
 For reads of this length, you are likely to run into memory constraints.
 Memory is shared across all active threads, so if you set fewer threads, more memory will be available to each.
 
-#### Paired end data
-Paired-end reads are not supported by the default bcar_merge build, because we generally see better behavior when running all pre-processing steps (e.g., FLASH) prior to running BCAR. 
-However, if your experimental design necessitates running BCAR on paired data, you can install a version that does handle paired-end reads by running the following commands while in the BCAR directory:
-```bash
-conda activate bcar-env
-${CONDA_PREFIX}/bin/gcc -O3 -w -I${CONDA_PREFIX}/include -L${CONDA_PREFIX}/lib -lm -pthread -o bcar_merge_paired ./src/bc_merger_v11.c
-```
-Use the flags --in-pairs and --out-pairs for both the sorting and merging scripts.
-
-#### Very many reads (>1 billion)
-In our experience, BCAR is sufficiently fast to handle hundreds of millions of reads within a few hours.
-If you have more reads than that and many CPUs, you can split your reads into smaller files to be processed in parallel.
-Suppose you sorted your dataset and determined it contains 10.5 million barcodes, and you have 10 CPUs to work with.
-Run the following:
-```bash
-python ./src/split_sorted_reads_into_chunks.py --in1 my_sorted_reads.fastq --bc-start 0 --bc-len 18 --size 1050000
-```
-This will split your data into 10 files with 1,050,000 barcodes, each called my_sorted_reads_0001.fastq, etc., that you can process separately.
-Afterwards, you can concatenate the BCAR output files.
-
 #### Many missense mutations, few indels
 BCAR defaults to a gap penalty of -1.0, which is appropriate when indel errors and missense errors are approximately equally abundant.
 On simulated reads, BCAR is quite accurate with this gap score across a broad range of indel and missense errors.
 However, if you have very frequent missense errors (>1%) and quite infrequent indel errors (<0.1%), then using a more severe gap penalty may improve accuracy.
-A gap penalty of -3.0 is probably appropriate for many datasets. 
+A gap penalty of -3.0 is probably appropriate for many such datasets. 
 
 ## Contributing
 Contributions are welcome! Feel free to open issues or submit pull requests on the GitHub repository.
