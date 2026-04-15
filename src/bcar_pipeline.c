@@ -151,12 +151,12 @@ static void print_usage(const char *prog) {
         "  --in <file[,file,...]>           FASTQ input(s), comma-separated, gzip OK\n\n"
         "Barcode extraction (choose mode):\n"
         "  --bc-start <int>                 Fixed position start (0-based, default: 0)\n"
-        "  --bc-len <int>                   Fixed barcode length (default: 18)\n"
+        "  --bc-len <int>                   Fixed barcode length (default: 15)\n"
         "  --context <pattern>              Context pattern with N's for barcode positions\n"
         "  --max-context-mismatches <int>   Allowed mismatches in flanking seqs (default: 1)\n\n"
         "Clustering:\n"
-        "  --max-mismatches <int>           Hamming distance radius (default: 1)\n"
-        "  --max-bc-indels <int>            Max indels in clustering/extraction (0-2, default: 0)\n"
+        "  --max-mismatches <int>           Max substitutions between clustered barcodes (default: 2)\n"
+        "  --max-bc-indels <int>            Max indels between clustered barcodes (0-2, default: 1)\n"
         "  --max-n <int>                    Max N bases in barcode (default: 2)\n\n"
         "Consensus:\n"
         "  --threads <int>                  Number of worker threads (default: 1)\n"
@@ -182,12 +182,12 @@ static params_t parse_args(int argc, char *argv[]) {
     p.tmp_dir = ".";
     p.chunk_mem = 4LL * 1024 * 1024 * 1024;
     p.max_open_files = 240;
-    p.max_mismatches = 1;
-    p.max_bc_indels = 0;
+    p.max_mismatches = 2;
+    p.max_bc_indels = 1;
     p.max_n = 2;
     p.extract.mode = 0;
     p.extract.bc_start = 0;
-    p.extract.bc_len = 18;
+    p.extract.bc_len = 15;
     p.extract.max_context_mm = 1;
     p.extract.max_bc_indels = 0;
     p.num_threads = 1;
