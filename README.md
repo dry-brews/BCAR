@@ -48,7 +48,7 @@ Required:
 
 Barcode extraction (choose mode):
   --bc-start <int>                 Fixed position start (0-based, default: 0)
-  --bc-len <int>                   Fixed barcode length (default: 18)
+  --bc-len <int>                   Fixed barcode length (default: 15)
   --context <pattern>              Context pattern with Ns for barcode positions
   --max-context-mismatches <int>   Allowed mismatches in flanking seqs (default: 1)
 
@@ -74,6 +74,21 @@ Resources:
 
 ```
 
+#### Specifying a barcode
+BCAR can detect barcodes through two methods: position-delimited or context.
+When the context flag is not present, BCAR will default to position-delimited identification, and the barcode is the portion of your read staring at position --bc-start and extending for --bc-len bases.
+If a context flag is used, it overrides --bc-start and --bc-len.
+
+#### Context flags
+Context can be provided in a grep-like format like this:
+```
+--context GAGTATGNNNNNTACGATC
+--context ^NNNNNTACGATC
+--context GAGTATGNNNNN$
+```
+The first call finds a 5-base barcode between two constant sequences.
+The second and third calls find 5-base barcodes anchored at the start or end of the read, respectively, flanked by a single constant sequence.
+
 #### Inputs and outputs
 In many cases, raw reads can be put into bcar in fastq format without any pre-processing.
 However, if you have paired reads, you will likely want to merge your reads before passing them to BCAR, using a tool like [FLASH](https://github.com/ebiggers/flash).
@@ -97,34 +112,41 @@ LNMBNHMKM<N7MJMMLK>N...
 The headers contain information about the sequencing run and the individual read.
 BCAR will output another fastq that looks like this:
 ```
-@bc=148;count=25;minor_frac=0.085
-CAGGACCAACAATATGGATT...
+@bc=ATACGAGATCGGGTCGTG;bcid=464;count=62;min_q=40;mean_q=40;minor_frac_mean=0.004;minor_frac_max=0.049
+ATACGAGATCGGGTCGTGTTATCAGTC...
 +
-IIIIIIIIIIIIIIIIIIII...
-@bc=149;count=1
-CGCGACGCACCGAAAAGGTT...
+IIIIIIIIIIIIIIIIIIIIIIIIIII...
+@bc=AGGGCGTACTGACTGTCT;bcid=90;count=1;min_q=7;mean_q=42;minor_frac_mean=0.000;minor_frac_max=0.000
+AGGGCGTACTGACTGTCTTTATCAGTC...
 +
-=(F?7LHH7JK.CB/GJNDM...
-@bc=150;count=10;minor_frac=0.400
-GCTCGTGGTTCGTTAGGGTT...
+@8F(=*ILND(JLFFDLNNKNNNNNNN...
+@bc=TTGGGCCCAGTGGCAGGA;bcid=2;count=95;min_q=40;mean_q=40;minor_frac_mean=0.009;minor_frac_max=0.326
+TTGGGCCCAGTGGCAGGATTATCAGTC...
 +
-IIIIIIIIIIIIIIIIIIII...
+IIIIIIIIIIIIIIIIIIIIIIIIIII...
 ```
 The headers here contain information about the barcode.
-bc=148 is a unique number assigned to each barcode group.
+bcid=464 is a unique number assigned to each barcode group.
 If barcode clustering is used, there may be multiple raw barcode sequences assigned to this number.
-count=25 means that 25 raw reads were used to generate this consensus sequence.
-minor_frac=0.085 means that the evidence for the second-most-common base was no more than 8.5% of the total evidence at each position in the read.
+bc=TTGGGCCCAGTGGCAGGA is the barcode inferred from the conensus sequence using the same logic that was used to detect barcodes in the raw reads.
+count=62 means that 62 raw reads were used to generate this consensus sequence.
+min_q and mean_q refer to the quality scores assigned to each position the consensus read.
+minor_frac_mean and minor_frac_max refer to the evidence for the second-most-common base at each position in the consensus read.
+Take caution that while the headers always start with "@", quality score lines can also begin with "@".
 
 Notice there are a few possible outcomes.
-When you have many reads that all agree with each other (e.g., bc=148), you will have consistently maxed-out quality scores of I=40 and minor_frac will be low.
-When you have only a single read mapped to a given barcode (bc=149), BCAR will return exactly that read with its original quality scores, and minor_frac will not be reported because it is not meaningful.
-Sometimes, you may see consensus read with a high count and good quality scores, but minor_frac is high.
+When you have many reads that all agree with each other (e.g., bcid=464), you will have consistently maxed-out quality scores of I=40 and minor_frac will be low.
+When you have only a single read mapped to a given barcode (bcid=90), BCAR will return exactly that read with its original quality scores, and minor_frac_mean and minor_frac_max will always be zero. Note that quality scores >40 are possible in these reads, even though BCAR caps most quality scores at 40.
+Sometimes, you may see consensus read with a high count and good quality scores, but minor_frac_max is high.
 This may indicate that the barcode is associated with multiple variants in your library.
 
 You will likely want to filter your consensus reads before using them to characterize your library.
 How you do so is up to you, and the best way to do so depends on your experimental and sequencing strategies.
-We have had success by filtering on a mean quality score >30, minimum count >1, and minor_frac<0.2.
+We have had success by filtering on a mean_q >30, count >1, and minor_frac_max <0.25.
+
+#### Threads
+You should assign as many threads as you have available on your machine.
+Reading, writing, and sorting read are each handled by a single thread, but the aligning and merging of each barcode group is a multithreaded process with speed approximately proportional to the number of threads available.
 
 ### 4. Special Use Cases
 #### Very long reads (>100kb)
