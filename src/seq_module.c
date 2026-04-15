@@ -67,9 +67,11 @@ SeqArray seq_to_array(const char* seq, const char* qual, int length) {
 // Convert consensus array back to a sequence + quality.
 // Sets *minor_frac_out to the highest minor allele frequency observed at any position.
 void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out,
-                  double* minor_frac_out) {
+                  double* minor_frac_max_out, double* minor_frac_mean_out) {
     int out_pos = 0;
     double max_f2 = 0.0;
+    double sum_f2 = 0.0;
+    int count_f2 = 0;
     *seq_out = malloc(array->length + 1);
     *qual_out = malloc(array->length + 1);
 
@@ -132,10 +134,10 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out,
                 if (j == max_idx) continue;
                 if (pos->scores[j] > second_val) second_val = pos->scores[j];
             }
-            if (second_val > 0) {
-                double f2 = (double)second_val / total_non_gap;
-                if (f2 > max_f2) max_f2 = f2;
-            }
+            double f2 = (double)second_val / total_non_gap;
+            if (f2 > max_f2) max_f2 = f2;
+            sum_f2 += f2;
+            count_f2++;
         }
 
         // If gap is most supported, skip this position
@@ -228,9 +230,11 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out,
     *seq_out = realloc(*seq_out, out_pos + 1);
     *qual_out = realloc(*qual_out, out_pos + 1);
 
-    // Report highest minor allele frequency
-    if (minor_frac_out)
-        *minor_frac_out = max_f2;
+    // Report minor allele frequency statistics
+    if (minor_frac_max_out)
+        *minor_frac_max_out = max_f2;
+    if (minor_frac_mean_out)
+        *minor_frac_mean_out = count_f2 > 0 ? sum_f2 / count_f2 : 0.0;
 }
 
 // Compare two positions using scaled cosine similarity

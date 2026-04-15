@@ -307,6 +307,7 @@ typedef struct {
 
 typedef struct {
     FILE *fwd_out;
+    FILE *fail_out;
     pthread_mutex_t mutex;
 } OutputFiles;
 
@@ -315,6 +316,7 @@ typedef struct {
     OutputFiles *output;
     int thread_id;
     bool no_alignment;
+    const extraction_config_t *extract;
 } WorkerArgs;
 
 /* Context passed to merge callback */
@@ -398,16 +400,67 @@ static void free_barcode_group(BarcodeGroup *group) {
     free(group);
 }
 
-static void process_barcode(BarcodeGroup *group, char **fwd_entry, bool no_alignment) {
+/* Compute minimum and mean Phred quality score (integers) across a quality string */
+static void compute_q_stats(const char *qual, int *min_q, int *mean_q) {
+    int len = (int)strlen(qual);
+    if (len <= 0) { *min_q = 0; *mean_q = 0; return; }
+    int mn = 255;
+    long sum = 0;
+    for (int i = 0; i < len; i++) {
+        int q = (int)(unsigned char)qual[i] - 33;
+        if (q < 0) q = 0;
+        if (q < mn) mn = q;
+        sum += q;
+    }
+    *min_q = mn;
+    *mean_q = (int)(sum / len);
+}
+
+/* Build a formatted FASTQ entry string for the consensus output */
+static char *build_fwd_entry(const char *bc_detected, const char *bcid,
+                             int count, int min_q, int mean_q,
+                             double minor_mean, double minor_max,
+                             const char *seq, const char *qual) {
+    const char *fmt = "@bc=%s;bcid=%s;count=%d;min_q=%d;mean_q=%d;minor_frac_mean=%.3f;minor_frac_max=%.3f\n%s\n+\n%s\n";
+    int len = snprintf(NULL, 0, fmt, bc_detected, bcid, count, min_q, mean_q,
+                       minor_mean, minor_max, seq, qual) + 1;
+    char *entry = malloc(len);
+    snprintf(entry, len, fmt, bc_detected, bcid, count, min_q, mean_q,
+             minor_mean, minor_max, seq, qual);
+    return entry;
+}
+
+/* Build a fail entry in the same 4-line FASTQ format used during Phase C */
+static char *build_fail_entry(const char *bcid, int count,
+                              const char *seq, const char *qual) {
+    const char *fmt = "@bcid=%s;count=%d\n%s\n+\n%s\n";
+    int len = snprintf(NULL, 0, fmt, bcid, count, seq, qual) + 1;
+    char *entry = malloc(len);
+    snprintf(entry, len, fmt, bcid, count, seq, qual);
+    return entry;
+}
+
+static void process_barcode(BarcodeGroup *group, char **fwd_entry, char **fail_entry,
+                            bool no_alignment, const extraction_config_t *extract) {
     *fwd_entry = NULL;
+    *fail_entry = NULL;
 
     if (group->count == 0) return;
     if (group->count == 1) {
-        int fwd_len = snprintf(NULL, 0, "@bc=%s;count=%d\n%s\n+\n%s\n",
-                              group->bc, group->count, group->fwd_reads[0], group->fwd_quals[0]) + 1;
-        *fwd_entry = malloc(fwd_len);
-        snprintf(*fwd_entry, fwd_len, "@bc=%s;count=%d\n%s\n+\n%s\n",
-                group->bc, group->count, group->fwd_reads[0], group->fwd_quals[0]);
+        const char *seq = group->fwd_reads[0];
+        const char *qual = group->fwd_quals[0];
+
+        extraction_result_t ext;
+        if (extract_barcode(seq, (int)strlen(seq), extract, &ext) < 0) {
+            *fail_entry = build_fail_entry(group->bc, group->count, seq, qual);
+            return;
+        }
+
+        int min_q = 0, mean_q = 0;
+        compute_q_stats(qual, &min_q, &mean_q);
+
+        *fwd_entry = build_fwd_entry(ext.barcode, group->bc, group->count,
+                                     min_q, mean_q, 0.0, 0.0, seq, qual);
         total_barcodes++;
         return;
     }
@@ -431,16 +484,20 @@ static void process_barcode(BarcodeGroup *group, char **fwd_entry, bool no_align
 
     if (no_alignment) {
         char *fwd_seq = NULL, *fwd_qual = NULL;
-        double minor_frac = 0.0;
-        array_to_seq(&fwd_consensus, &fwd_seq, &fwd_qual, &minor_frac);
+        double minor_max = 0.0, minor_mean = 0.0;
+        array_to_seq(&fwd_consensus, &fwd_seq, &fwd_qual, &minor_max, &minor_mean);
 
-        int fwd_len = snprintf(NULL, 0, "@bc=%s;count=%d;minor_frac=%.3f\n%s\n+\n%s\n",
-                               group->bc, group->count, minor_frac, fwd_seq, fwd_qual) + 1;
-        *fwd_entry = malloc(fwd_len);
-        snprintf(*fwd_entry, fwd_len, "@bc=%s;count=%d;minor_frac=%.3f\n%s\n+\n%s\n",
-                 group->bc, group->count, minor_frac, fwd_seq, fwd_qual);
-
-        total_barcodes++;
+        extraction_result_t ext;
+        if (extract_barcode(fwd_seq, (int)strlen(fwd_seq), extract, &ext) < 0) {
+            *fail_entry = build_fail_entry(group->bc, group->count, fwd_seq, fwd_qual);
+        } else {
+            int min_q = 0, mean_q = 0;
+            compute_q_stats(fwd_qual, &min_q, &mean_q);
+            *fwd_entry = build_fwd_entry(ext.barcode, group->bc, group->count,
+                                         min_q, mean_q, minor_mean, minor_max,
+                                         fwd_seq, fwd_qual);
+            total_barcodes++;
+        }
 
         free(fwd_seq);
         free(fwd_qual);
@@ -483,16 +540,20 @@ static void process_barcode(BarcodeGroup *group, char **fwd_entry, bool no_align
 
     /* Convert to FASTQ */
     char *fwd_seq, *fwd_qual;
-    double minor_frac = 0.0;
-    array_to_seq(&merged_fwd, &fwd_seq, &fwd_qual, &minor_frac);
+    double minor_max = 0.0, minor_mean = 0.0;
+    array_to_seq(&merged_fwd, &fwd_seq, &fwd_qual, &minor_max, &minor_mean);
 
-    int fwd_len = snprintf(NULL, 0, "@bc=%s;count=%d;minor_frac=%.3f\n%s\n+\n%s\n",
-                           group->bc, group->count, minor_frac, fwd_seq, fwd_qual) + 1;
-    *fwd_entry = malloc(fwd_len);
-    snprintf(*fwd_entry, fwd_len, "@bc=%s;count=%d;minor_frac=%.3f\n%s\n+\n%s\n",
-             group->bc, group->count, minor_frac, fwd_seq, fwd_qual);
-
-    total_barcodes++;
+    extraction_result_t ext;
+    if (extract_barcode(fwd_seq, (int)strlen(fwd_seq), extract, &ext) < 0) {
+        *fail_entry = build_fail_entry(group->bc, group->count, fwd_seq, fwd_qual);
+    } else {
+        int min_q = 0, mean_q = 0;
+        compute_q_stats(fwd_qual, &min_q, &mean_q);
+        *fwd_entry = build_fwd_entry(ext.barcode, group->bc, group->count,
+                                     min_q, mean_q, minor_mean, minor_max,
+                                     fwd_seq, fwd_qual);
+        total_barcodes++;
+    }
 
     free(fwd_seq);
     free(fwd_qual);
@@ -515,19 +576,23 @@ static void *worker_thread(void *arg) {
     WorkQueue *queue = args->queue;
     OutputFiles *output = args->output;
     bool no_alignment = args->no_alignment;
+    const extraction_config_t *extract = args->extract;
 
     while (true) {
         BarcodeGroup *group = queue_pop(queue);
         if (!group) break;
 
-        char *fwd_entry;
-        process_barcode(group, &fwd_entry, no_alignment);
-        if (fwd_entry) {
+        char *fwd_entry = NULL;
+        char *fail_entry = NULL;
+        process_barcode(group, &fwd_entry, &fail_entry, no_alignment, extract);
+        if (fwd_entry || (fail_entry && output->fail_out)) {
             pthread_mutex_lock(&output->mutex);
-            fprintf(output->fwd_out, "%s", fwd_entry);
+            if (fwd_entry) fprintf(output->fwd_out, "%s", fwd_entry);
+            if (fail_entry && output->fail_out) fprintf(output->fail_out, "%s", fail_entry);
             pthread_mutex_unlock(&output->mutex);
         }
         free(fwd_entry);
+        free(fail_entry);
         free_barcode_group(group);
     }
     return NULL;
@@ -803,11 +868,18 @@ int main(int argc, char *argv[]) {
     t_phase = now_sec();
 
     /* Set up output */
-    OutputFiles output = {NULL, PTHREAD_MUTEX_INITIALIZER};
+    OutputFiles output = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER};
     output.fwd_out = fopen(params.out_file, "w");
     if (!output.fwd_out) {
         fprintf(stderr, "Fatal: cannot open output file: %s\n", params.out_file);
         exit(EXIT_FAILURE);
+    }
+    if (params.fail_file) {
+        output.fail_out = fopen(params.fail_file, "a");
+        if (!output.fail_out) {
+            fprintf(stderr, "Fatal: cannot open fail file for append: %s\n", params.fail_file);
+            exit(EXIT_FAILURE);
+        }
     }
 
     /* Set up work queue */
@@ -823,6 +895,7 @@ int main(int argc, char *argv[]) {
         thread_args[i].output = &output;
         thread_args[i].thread_id = i;
         thread_args[i].no_alignment = params.no_alignment;
+        thread_args[i].extract = &params.extract;
         if (pthread_create(&threads[i], NULL, worker_thread, &thread_args[i]) != 0) {
             fprintf(stderr, "Fatal: failed to create worker thread %d\n", i);
             exit(EXIT_FAILURE);
@@ -851,6 +924,7 @@ int main(int argc, char *argv[]) {
     pthread_cond_destroy(&work_queue.not_full);
     pthread_mutex_destroy(&output.mutex);
     fclose(output.fwd_out);
+    if (output.fail_out) fclose(output.fail_out);
     free(threads);
     free(thread_args);
 

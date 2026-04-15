@@ -39,7 +39,7 @@ extern double call_indel;
 // Seq module functions
 SeqArray seq_to_array(const char* seq, const char* qual, int length);
 void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out,
-                  double* minor_frac_out);
+                  double* minor_frac_max_out, double* minor_frac_mean_out);
 double compare_positions(const Position* a, const Position* b);
 double compare_seqs(const SeqArray* a, const SeqArray* b);
 SeqArray build_unaligned_consensus(SeqArray* sequences, int count);
