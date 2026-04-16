@@ -740,6 +740,8 @@ int main(int argc, char *argv[]) {
     uint64_t *ubid_map = NULL;
     uint64_t n_clusters = assign_ubids(&ht, &uf, &ubid_map);
 
+    check_cluster_diameters(&ht, &uf, ubid_map, params.max_mismatches, total_reads);
+
     format_elapsed(now_sec() - t_phase, elapsed, sizeof(elapsed));
     fprintf(stderr, "\nPhase B complete (%s)\n", elapsed);
     fprintf(stderr, "  Clusters: %lu\n\n", (unsigned long)n_clusters);

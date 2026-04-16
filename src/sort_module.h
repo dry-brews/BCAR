@@ -197,6 +197,9 @@ void cluster_barcodes(barcode_ht_t *ht, union_find_t *uf,
                       int max_mismatches, int max_bc_indels);
 uint64_t assign_ubids(barcode_ht_t *ht, union_find_t *uf,
                       uint64_t **ubid_map_out);
+void check_cluster_diameters(const barcode_ht_t *ht, union_find_t *uf,
+                              const uint64_t *ubid_map,
+                              int max_mismatches, long total_reads);
 
 /* ------------------------------------------------------------------ */
 /*  N-containing barcode resolution                                   */

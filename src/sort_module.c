@@ -495,48 +495,64 @@ int extract_barcode(const char *seq, int slen,
 }
 
 /* ------------------------------------------------------------------ */
-/*  Neighborhood enumeration and clustering                           */
+/*  Neighborhood enumeration and greedy centroid clustering           */
 /* ------------------------------------------------------------------ */
 
-/* Enumerate substitution neighbors at distance 1 and union with matches */
-static void enum_subs_d1(const bc_key_t *bc, uint32_t bc_uf,
-                         barcode_ht_t *ht, union_find_t *uf,
-                         const uint32_t *counts) {
+/* Sortable entry used to process barcodes in descending count order */
+typedef struct {
+    uint32_t uf_idx;
+    uint32_t count;
+    uint64_t ht_slot;
+} sorted_bc_entry_t;
+
+static int cmp_bc_count_desc(const void *a, const void *b) {
+    const sorted_bc_entry_t *A = (const sorted_bc_entry_t *)a;
+    const sorted_bc_entry_t *B = (const sorted_bc_entry_t *)b;
+    if (A->count > B->count) return -1;
+    if (A->count < B->count) return  1;
+    return 0;
+}
+
+/* Enumerate distance-1 substitution neighbors and absorb unassigned ones
+   into the centroid at bc_uf. */
+static void enum_subs_d1_greedy(const bc_key_t *bc, uint32_t bc_uf,
+                                 barcode_ht_t *ht, union_find_t *uf,
+                                 const uint32_t *counts, bool *assigned) {
     for (int i = 0; i < bc->len; i++) {
         int orig;
-        if (i < 32)
-            orig = (bc->lo >> (2 * i)) & 3;
-        else
-            orig = (bc->hi >> (2 * (i - 32))) & 3;
+        if (i < 32) orig = (bc->lo >> (2 * i)) & 3;
+        else         orig = (bc->hi >> (2 * (i - 32))) & 3;
 
         for (int alt = 0; alt < 4; alt++) {
             if (alt == orig) continue;
             bc_key_t nb = *bc;
-            /* Set position i to alt */
             if (i < 32)
                 nb.lo = (bc->lo & ~(3ULL << (2 * i))) | ((uint64_t)alt << (2 * i));
             else
                 nb.hi = (bc->hi & ~(3ULL << (2 * (i - 32)))) | ((uint64_t)alt << (2 * (i - 32)));
             ht_entry_t *e = ht_lookup(ht, &nb);
-            if (e) uf_union(uf, bc_uf, e->uf_idx, counts);
+            if (e && !assigned[e->uf_idx]) {
+                uf_union(uf, bc_uf, e->uf_idx, counts);
+                assigned[e->uf_idx] = true;
+            }
         }
     }
 }
 
-/* Enumerate substitution neighbors at distance 2 and union with matches */
-static void enum_subs_d2(const bc_key_t *bc, uint32_t bc_uf,
-                         barcode_ht_t *ht, union_find_t *uf,
-                         const uint32_t *counts) {
+/* Enumerate distance-2 substitution neighbors and absorb unassigned ones. */
+static void enum_subs_d2_greedy(const bc_key_t *bc, uint32_t bc_uf,
+                                 barcode_ht_t *ht, union_find_t *uf,
+                                 const uint32_t *counts, bool *assigned) {
     int L = bc->len;
     for (int i = 0; i < L; i++) {
         int orig_i;
         if (i < 32) orig_i = (bc->lo >> (2 * i)) & 3;
-        else orig_i = (bc->hi >> (2 * (i - 32))) & 3;
+        else         orig_i = (bc->hi >> (2 * (i - 32))) & 3;
 
         for (int j = i + 1; j < L; j++) {
             int orig_j;
             if (j < 32) orig_j = (bc->lo >> (2 * j)) & 3;
-            else orig_j = (bc->hi >> (2 * (j - 32))) & 3;
+            else         orig_j = (bc->hi >> (2 * (j - 32))) & 3;
 
             for (int ai = 0; ai < 4; ai++) {
                 if (ai == orig_i) continue;
@@ -551,9 +567,11 @@ static void enum_subs_d2(const bc_key_t *bc, uint32_t bc_uf,
                         nb.lo = (nb.lo & ~(3ULL << (2 * j))) | ((uint64_t)aj << (2 * j));
                     else
                         nb.hi = (nb.hi & ~(3ULL << (2 * (j - 32)))) | ((uint64_t)aj << (2 * (j - 32)));
-
                     ht_entry_t *e = ht_lookup(ht, &nb);
-                    if (e) uf_union(uf, bc_uf, e->uf_idx, counts);
+                    if (e && !assigned[e->uf_idx]) {
+                        uf_union(uf, bc_uf, e->uf_idx, counts);
+                        assigned[e->uf_idx] = true;
+                    }
                 }
             }
         }
@@ -602,10 +620,11 @@ static void make_insertion(const bc_key_t *bc, int ins, int base, bc_key_t *out)
     }
 }
 
-/* Enumerate deletion neighbors (1 and 2 deletions) */
-static void enum_deletions(const bc_key_t *bc, uint32_t bc_uf,
-                           barcode_ht_t *ht, union_find_t *uf,
-                           const uint32_t *counts, int max_indels) {
+/* Enumerate deletion neighbors (1 and 2 deletions) and absorb unassigned ones. */
+static void enum_deletions_greedy(const bc_key_t *bc, uint32_t bc_uf,
+                                   barcode_ht_t *ht, union_find_t *uf,
+                                   const uint32_t *counts, int max_indels,
+                                   bool *assigned) {
     if (bc->len < 2) return;
 
     /* 1 deletion */
@@ -613,7 +632,10 @@ static void enum_deletions(const bc_key_t *bc, uint32_t bc_uf,
         bc_key_t nb;
         make_deletion(bc, i, &nb);
         ht_entry_t *e = ht_lookup(ht, &nb);
-        if (e) uf_union(uf, bc_uf, e->uf_idx, counts);
+        if (e && !assigned[e->uf_idx]) {
+            uf_union(uf, bc_uf, e->uf_idx, counts);
+            assigned[e->uf_idx] = true;
+        }
     }
 
     /* 2 deletions */
@@ -625,16 +647,20 @@ static void enum_deletions(const bc_key_t *bc, uint32_t bc_uf,
                 bc_key_t nb2;
                 make_deletion(&nb1, j, &nb2);
                 ht_entry_t *e = ht_lookup(ht, &nb2);
-                if (e) uf_union(uf, bc_uf, e->uf_idx, counts);
+                if (e && !assigned[e->uf_idx]) {
+                    uf_union(uf, bc_uf, e->uf_idx, counts);
+                    assigned[e->uf_idx] = true;
+                }
             }
         }
     }
 }
 
-/* Enumerate insertion neighbors (1 and 2 insertions) */
-static void enum_insertions(const bc_key_t *bc, uint32_t bc_uf,
-                            barcode_ht_t *ht, union_find_t *uf,
-                            const uint32_t *counts, int max_indels) {
+/* Enumerate insertion neighbors (1 and 2 insertions) and absorb unassigned ones. */
+static void enum_insertions_greedy(const bc_key_t *bc, uint32_t bc_uf,
+                                    barcode_ht_t *ht, union_find_t *uf,
+                                    const uint32_t *counts, int max_indels,
+                                    bool *assigned) {
     if (bc->len >= MAX_BC_LEN) return;
 
     /* 1 insertion */
@@ -643,7 +669,10 @@ static void enum_insertions(const bc_key_t *bc, uint32_t bc_uf,
             bc_key_t nb;
             make_insertion(bc, i, base, &nb);
             ht_entry_t *e = ht_lookup(ht, &nb);
-            if (e) uf_union(uf, bc_uf, e->uf_idx, counts);
+            if (e && !assigned[e->uf_idx]) {
+                uf_union(uf, bc_uf, e->uf_idx, counts);
+                assigned[e->uf_idx] = true;
+            }
         }
     }
 
@@ -658,7 +687,10 @@ static void enum_insertions(const bc_key_t *bc, uint32_t bc_uf,
                         bc_key_t nb2;
                         make_insertion(&nb1, j, b2, &nb2);
                         ht_entry_t *e = ht_lookup(ht, &nb2);
-                        if (e) uf_union(uf, bc_uf, e->uf_idx, counts);
+                        if (e && !assigned[e->uf_idx]) {
+                            uf_union(uf, bc_uf, e->uf_idx, counts);
+                            assigned[e->uf_idx] = true;
+                        }
                     }
                 }
             }
@@ -666,8 +698,15 @@ static void enum_insertions(const bc_key_t *bc, uint32_t bc_uf,
     }
 }
 
-/* Run full clustering. Builds a uf_idx-indexed counts array from the HT
-   so that uf_union can track the highest-count representative. */
+/* Greedy centroid clustering.
+ *
+ * Processes barcodes in descending read-count order. The first time a
+ * barcode is seen it becomes the centroid of a new cluster and absorbs
+ * every unassigned barcode within the distance threshold. Because we
+ * only absorb barcodes that are not yet claimed, two high-count barcodes
+ * that happen to be close will each become their own centroid instead of
+ * merging via a transitive chain.
+ */
 void cluster_barcodes(barcode_ht_t *ht, union_find_t *uf,
                       int max_mismatches, int max_bc_indels) {
     /* Build counts array indexed by uf_idx */
@@ -677,33 +716,49 @@ void cluster_barcodes(barcode_ht_t *ht, union_find_t *uf,
         counts[ht->slots[i].uf_idx] = ht->slots[i].count;
     }
 
-    fprintf(stderr, "  Enumerating substitution neighbors (d=1)...\n");
+    /* Build array of all barcodes and sort by count descending */
+    sorted_bc_entry_t *sorted = xmalloc(ht->count * sizeof(sorted_bc_entry_t),
+                                        "cluster sorted");
+    uint64_t n = 0;
     for (uint64_t i = 0; i < ht->capacity; i++) {
         if (!ht->slots[i].occupied) continue;
-        enum_subs_d1(&ht->slots[i].bc, ht->slots[i].uf_idx, ht, uf, counts);
+        sorted[n].uf_idx   = ht->slots[i].uf_idx;
+        sorted[n].count    = ht->slots[i].count;
+        sorted[n].ht_slot  = i;
+        n++;
     }
+    qsort(sorted, (size_t)n, sizeof(sorted_bc_entry_t), cmp_bc_count_desc);
 
-    if (max_mismatches >= 2) {
-        fprintf(stderr, "  Enumerating substitution neighbors (d=2)...\n");
-        for (uint64_t i = 0; i < ht->capacity; i++) {
-            if (!ht->slots[i].occupied) continue;
-            enum_subs_d2(&ht->slots[i].bc, ht->slots[i].uf_idx, ht, uf, counts);
+    /* assigned[uf_idx] = true once a barcode has been claimed by a centroid */
+    bool *assigned = xcalloc(uf->n, sizeof(bool), "cluster assigned");
+
+    fprintf(stderr, "  Greedy centroid pass (%lu unique barcodes)...\n",
+            (unsigned long)n);
+
+    uint64_t n_centroids = 0;
+    for (uint64_t i = 0; i < n; i++) {
+        uint32_t bc_uf = sorted[i].uf_idx;
+        if (assigned[bc_uf]) continue;   /* already absorbed by a higher-count centroid */
+
+        assigned[bc_uf] = true;           /* this barcode is a centroid */
+        n_centroids++;
+
+        const bc_key_t *bc = &ht->slots[sorted[i].ht_slot].bc;
+
+        if (max_mismatches >= 1)
+            enum_subs_d1_greedy(bc, bc_uf, ht, uf, counts, assigned);
+        if (max_mismatches >= 2)
+            enum_subs_d2_greedy(bc, bc_uf, ht, uf, counts, assigned);
+        if (max_bc_indels > 0) {
+            enum_deletions_greedy(bc, bc_uf, ht, uf, counts, max_bc_indels, assigned);
+            enum_insertions_greedy(bc, bc_uf, ht, uf, counts, max_bc_indels, assigned);
         }
     }
 
-    if (max_bc_indels > 0) {
-        fprintf(stderr, "  Enumerating deletion neighbors...\n");
-        for (uint64_t i = 0; i < ht->capacity; i++) {
-            if (!ht->slots[i].occupied) continue;
-            enum_deletions(&ht->slots[i].bc, ht->slots[i].uf_idx, ht, uf, counts, max_bc_indels);
-        }
-        fprintf(stderr, "  Enumerating insertion neighbors...\n");
-        for (uint64_t i = 0; i < ht->capacity; i++) {
-            if (!ht->slots[i].occupied) continue;
-            enum_insertions(&ht->slots[i].bc, ht->slots[i].uf_idx, ht, uf, counts, max_bc_indels);
-        }
-    }
+    fprintf(stderr, "  Centroids: %lu\n", (unsigned long)n_centroids);
 
+    free(sorted);
+    free(assigned);
     free(counts);
 }
 
@@ -726,6 +781,156 @@ uint64_t assign_ubids(barcode_ht_t *ht, union_find_t *uf,
     free(root_ubid);
     *ubid_map_out = ubid_map;
     return next_ubid - 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Cluster diameter check                                            */
+/* ------------------------------------------------------------------ */
+
+/* Hamming distance between two bc_key_t of equal length.
+   Returns -1 when lengths differ (i.e. indel member vs. centroid). */
+static int hamming_key(const bc_key_t *a, const bc_key_t *b) {
+    if (a->len != b->len) return -1;
+    int diff = 0;
+    uint64_t xlo = a->lo ^ b->lo;
+    uint64_t xhi = a->hi ^ b->hi;
+    int len = a->len;
+    for (int i = 0; i < len && i < 32; i++)
+        if ((xlo >> (2 * i)) & 3) diff++;
+    for (int i = 32; i < len; i++)
+        if ((xhi >> (2 * (i - 32))) & 3) diff++;
+    return diff;
+}
+
+typedef struct {
+    uint32_t root;
+    long     total_reads;
+    uint64_t centroid_ht_slot;
+} cluster_info_t;
+
+static int cmp_cluster_reads_desc(const void *a, const void *b) {
+    const cluster_info_t *A = (const cluster_info_t *)a;
+    const cluster_info_t *B = (const cluster_info_t *)b;
+    if (A->total_reads > B->total_reads) return -1;
+    if (A->total_reads < B->total_reads) return  1;
+    return 0;
+}
+
+#define DIAMETER_SAMPLE_SIZE     10
+#define DIAMETER_REPORT_PCT      0.001   /* report clusters with >0.1% of reads */
+#define DIAMETER_MAX_REPORT      20      /* cap report at 20 clusters */
+
+/* After clustering, report large clusters and flag any where sampled members
+   reach the maximum substitution distance from the centroid. */
+void check_cluster_diameters(const barcode_ht_t *ht, union_find_t *uf,
+                              const uint64_t *ubid_map,
+                              int max_mismatches, long total_reads) {
+    if (total_reads <= 0) return;
+
+    long threshold = (long)(total_reads * DIAMETER_REPORT_PCT);
+    if (threshold < 100) threshold = 100;
+
+    /* Reverse mapping: uf_idx -> ht slot index */
+    uint64_t *uf_to_ht = xmalloc(uf->n * sizeof(uint64_t), "diameter uf_to_ht");
+    for (uint64_t i = 0; i < ht->capacity; i++) {
+        if (!ht->slots[i].occupied) continue;
+        uf_to_ht[ht->slots[i].uf_idx] = i;
+    }
+
+    /* Accumulate read counts per cluster root */
+    long *cluster_reads = xcalloc(uf->n, sizeof(long), "diameter cluster_reads");
+    for (uint64_t i = 0; i < ht->capacity; i++) {
+        if (!ht->slots[i].occupied) continue;
+        uint32_t root = uf_find(uf, ht->slots[i].uf_idx);
+        cluster_reads[root] += ht->slots[i].count;
+    }
+
+    /* Collect clusters above the size threshold */
+    cluster_info_t *big = NULL;
+    int n_big = 0, cap_big = 0;
+    for (uint32_t r = 0; r < uf->n; r++) {
+        if (uf_find(uf, r) != r) continue;          /* not a root */
+        if (cluster_reads[r] < threshold) continue;
+        if (n_big >= cap_big) {
+            cap_big = cap_big ? cap_big * 2 : 16;
+            big = xrealloc(big, cap_big * sizeof(cluster_info_t), "big clusters");
+        }
+        big[n_big].root             = r;
+        big[n_big].total_reads      = cluster_reads[r];
+        big[n_big].centroid_ht_slot = uf_to_ht[uf->best_idx[r]];
+        n_big++;
+    }
+    free(cluster_reads);
+
+    if (n_big == 0) {
+        free(uf_to_ht);
+        free(big);
+        return;
+    }
+
+    qsort(big, n_big, sizeof(cluster_info_t), cmp_cluster_reads_desc);
+    if (n_big > DIAMETER_MAX_REPORT) n_big = DIAMETER_MAX_REPORT;
+
+    fprintf(stderr, "\nCluster diameter check"
+            " (clusters with >%.1f%% of total reads, top %d shown):\n",
+            DIAMETER_REPORT_PCT * 100.0, n_big);
+
+    bool any_warning = false;
+
+    for (int ci = 0; ci < n_big; ci++) {
+        uint32_t root          = big[ci].root;
+        uint64_t centroid_slot = big[ci].centroid_ht_slot;
+        const bc_key_t *cbc    = &ht->slots[centroid_slot].bc;
+        char centroid_str[MAX_BC_LEN + 1];
+        decode_key(cbc, centroid_str);
+
+        uint64_t ubid = ubid_map ? ubid_map[centroid_slot] : 0;
+
+        /* Sample up to DIAMETER_SAMPLE_SIZE non-centroid members */
+        uint64_t sample_slots[DIAMETER_SAMPLE_SIZE];
+        int n_samples = 0;
+        for (uint64_t i = 0; i < ht->capacity && n_samples < DIAMETER_SAMPLE_SIZE; i++) {
+            if (!ht->slots[i].occupied) continue;
+            if (i == centroid_slot) continue;
+            if (uf_find(uf, ht->slots[i].uf_idx) != root) continue;
+            sample_slots[n_samples++] = i;
+        }
+
+        int max_dist   = 0;
+        int n_diff_len = 0;
+        for (int j = 0; j < n_samples; j++) {
+            int d = hamming_key(cbc, &ht->slots[sample_slots[j]].bc);
+            if (d < 0) n_diff_len++;
+            else if (d > max_dist) max_dist = d;
+        }
+
+        bool suspicious = (n_samples > 0 && max_mismatches > 0
+                           && max_dist >= max_mismatches);
+        if (suspicious) any_warning = true;
+
+        double pct = 100.0 * big[ci].total_reads / total_reads;
+        fprintf(stderr, "  UBID %-8lu  centroid=%-*s  reads=%-10ld (%.2f%%)",
+                (unsigned long)ubid, (int)cbc->len, centroid_str,
+                big[ci].total_reads, pct);
+        if (n_samples > 0) {
+            fprintf(stderr, "  max_dist=%d/%d", max_dist, max_mismatches);
+            if (n_diff_len > 0)
+                fprintf(stderr, " (+%d indel-length members)", n_diff_len);
+        }
+        if (suspicious)
+            fprintf(stderr, "  ** SUSPICIOUS: members at maximum clustering distance");
+        fprintf(stderr, "\n");
+    }
+
+    if (any_warning)
+        fprintf(stderr,
+                "\n  WARNING: Large cluster(s) have members at the maximum clustering\n"
+                "  distance. This may indicate over-merging. Consider tightening\n"
+                "  --max-mismatches or --max-bc-indels.\n");
+    fprintf(stderr, "\n");
+
+    free(uf_to_ht);
+    free(big);
 }
 
 /* ------------------------------------------------------------------ */
