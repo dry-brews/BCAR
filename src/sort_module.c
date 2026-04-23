@@ -698,6 +698,130 @@ static void enum_insertions_greedy(const bc_key_t *bc, uint32_t bc_uf,
     }
 }
 
+/* ------------------------------------------------------------------ */
+/*  Fixed-position mode indel enumeration                              */
+/*                                                                     */
+/*  In fixed-position extraction the HT only contains length-bc_len    */
+/*  barcodes. A read with an insertion pushes the last truth base out  */
+/*  of the window; a read with a deletion pulls a post-window base in. */
+/*  We therefore enumerate length-(L+k) insertion neighbors truncated  */
+/*  to L, and length-(L-k) deletion neighbors padded with all A/C/G/T  */
+/*  combinations to L.                                                 */
+/* ------------------------------------------------------------------ */
+
+static inline void clear_base(bc_key_t *k, int pos) {
+    if (pos < 32) k->lo &= ~(3ULL << (2 * pos));
+    else          k->hi &= ~(3ULL << (2 * (pos - 32)));
+}
+
+static inline void set_base(bc_key_t *k, int pos, int base) {
+    if (pos < 32) {
+        k->lo = (k->lo & ~(3ULL << (2 * pos))) |
+                ((uint64_t)base << (2 * pos));
+    } else {
+        k->hi = (k->hi & ~(3ULL << (2 * (pos - 32)))) |
+                ((uint64_t)base << (2 * (pos - 32)));
+    }
+}
+
+/* Fixed-mode: enumerate insertion-derived length-L candidates and absorb. */
+static void enum_insertions_fixed_greedy(const bc_key_t *bc, uint32_t bc_uf,
+                                          barcode_ht_t *ht, union_find_t *uf,
+                                          const uint32_t *counts, int max_indels,
+                                          bool *assigned) {
+    int L = bc->len;
+    if (L < 1 || L > MAX_BC_LEN) return;
+
+    /* 1 insertion: insert (i, b1) in length L+1 neighbor, truncate to L. */
+    for (int i = 0; i <= L; i++) {
+        for (int b1 = 0; b1 < 4; b1++) {
+            bc_key_t nb;
+            make_insertion(bc, i, b1, &nb);  /* len = L+1 */
+            clear_base(&nb, L);
+            nb.len = L;
+            ht_entry_t *e = ht_lookup(ht, &nb);
+            if (e && !assigned[e->uf_idx]) {
+                uf_union(uf, bc_uf, e->uf_idx, counts);
+                assigned[e->uf_idx] = true;
+            }
+        }
+    }
+
+    /* 2 insertions: two nested insertions -> length L+2, truncate to L. */
+    if (max_indels >= 2) {
+        for (int i = 0; i <= L; i++) {
+            for (int b1 = 0; b1 < 4; b1++) {
+                bc_key_t nb1;
+                make_insertion(bc, i, b1, &nb1);  /* len = L+1 */
+                for (int j = 0; j <= nb1.len; j++) {
+                    for (int b2 = 0; b2 < 4; b2++) {
+                        bc_key_t nb2;
+                        make_insertion(&nb1, j, b2, &nb2);  /* len = L+2 */
+                        clear_base(&nb2, L);
+                        clear_base(&nb2, L + 1);
+                        nb2.len = L;
+                        ht_entry_t *e = ht_lookup(ht, &nb2);
+                        if (e && !assigned[e->uf_idx]) {
+                            uf_union(uf, bc_uf, e->uf_idx, counts);
+                            assigned[e->uf_idx] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* Fixed-mode: enumerate deletion-derived length-L candidates and absorb. */
+static void enum_deletions_fixed_greedy(const bc_key_t *bc, uint32_t bc_uf,
+                                         barcode_ht_t *ht, union_find_t *uf,
+                                         const uint32_t *counts, int max_indels,
+                                         bool *assigned) {
+    int L = bc->len;
+    if (L < 2) return;
+
+    /* 1 deletion: remove position i -> length L-1, pad position L-1 with A/C/G/T. */
+    for (int i = 0; i < L; i++) {
+        bc_key_t nb1;
+        make_deletion(bc, i, &nb1);  /* len = L-1, slot L-1 is zero */
+        for (int pad = 0; pad < 4; pad++) {
+            bc_key_t nb = nb1;
+            set_base(&nb, L - 1, pad);
+            nb.len = L;
+            ht_entry_t *e = ht_lookup(ht, &nb);
+            if (e && !assigned[e->uf_idx]) {
+                uf_union(uf, bc_uf, e->uf_idx, counts);
+                assigned[e->uf_idx] = true;
+            }
+        }
+    }
+
+    /* 2 deletions: length L-2, pad positions L-2 and L-1 with 16 combos. */
+    if (max_indels >= 2 && L >= 3) {
+        for (int i = 0; i < L; i++) {
+            bc_key_t nb1;
+            make_deletion(bc, i, &nb1);  /* len = L-1 */
+            for (int j = 0; j < nb1.len; j++) {
+                bc_key_t nb2;
+                make_deletion(&nb1, j, &nb2);  /* len = L-2 */
+                for (int p1 = 0; p1 < 4; p1++) {
+                    for (int p2 = 0; p2 < 4; p2++) {
+                        bc_key_t nb = nb2;
+                        set_base(&nb, L - 2, p1);
+                        set_base(&nb, L - 1, p2);
+                        nb.len = L;
+                        ht_entry_t *e = ht_lookup(ht, &nb);
+                        if (e && !assigned[e->uf_idx]) {
+                            uf_union(uf, bc_uf, e->uf_idx, counts);
+                            assigned[e->uf_idx] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* Greedy centroid clustering.
  *
  * Processes barcodes in descending read-count order. The first time a
@@ -708,7 +832,11 @@ static void enum_insertions_greedy(const bc_key_t *bc, uint32_t bc_uf,
  * merging via a transitive chain.
  */
 void cluster_barcodes(barcode_ht_t *ht, union_find_t *uf,
-                      int max_mismatches, int max_bc_indels) {
+                      int max_mismatches,
+                      const extraction_config_t *extract) {
+    int max_bc_indels = extract->max_bc_indels;
+    int fixed_mode = (extract->mode == 0);
+
     /* Build counts array indexed by uf_idx */
     uint32_t *counts = xmalloc(uf->n * sizeof(uint32_t), "cluster counts");
     for (uint64_t i = 0; i < ht->capacity; i++) {
@@ -750,8 +878,17 @@ void cluster_barcodes(barcode_ht_t *ht, union_find_t *uf,
         if (max_mismatches >= 2)
             enum_subs_d2_greedy(bc, bc_uf, ht, uf, counts, assigned);
         if (max_bc_indels > 0) {
-            enum_deletions_greedy(bc, bc_uf, ht, uf, counts, max_bc_indels, assigned);
-            enum_insertions_greedy(bc, bc_uf, ht, uf, counts, max_bc_indels, assigned);
+            if (fixed_mode) {
+                enum_deletions_fixed_greedy(bc, bc_uf, ht, uf, counts,
+                                            max_bc_indels, assigned);
+                enum_insertions_fixed_greedy(bc, bc_uf, ht, uf, counts,
+                                             max_bc_indels, assigned);
+            } else {
+                enum_deletions_greedy(bc, bc_uf, ht, uf, counts,
+                                      max_bc_indels, assigned);
+                enum_insertions_greedy(bc, bc_uf, ht, uf, counts,
+                                       max_bc_indels, assigned);
+            }
         }
     }
 

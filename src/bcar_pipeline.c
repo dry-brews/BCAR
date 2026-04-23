@@ -735,7 +735,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    cluster_barcodes(&ht, &uf, params.max_mismatches, params.max_bc_indels);
+    cluster_barcodes(&ht, &uf, params.max_mismatches, &params.extract);
 
     uint64_t *ubid_map = NULL;
     uint64_t n_clusters = assign_ubids(&ht, &uf, &ubid_map);
