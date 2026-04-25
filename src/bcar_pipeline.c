@@ -14,9 +14,6 @@
 #include "sort_module.h"
 #include "seq_module.h"
 
-/* Tell the linker we use fatal_alloc from sort_module.c */
-#define FATAL_ALLOC_PROVIDED
-
 /* ------------------------------------------------------------------ */
 /*  Program parameters                                                */
 /* ------------------------------------------------------------------ */
@@ -55,6 +52,9 @@ double call_total = 0.0;
 double call_missense = 0.0;
 double call_indel = 0.0;
 long total_barcodes = 0;
+
+/* Protects concurrent updates to the four counters above from worker threads */
+pthread_mutex_t consensus_stats_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ------------------------------------------------------------------ */
 /*  Timing utilities                                                  */
@@ -278,8 +278,18 @@ static params_t parse_args(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    if (p.max_n < 0 || p.max_n > 5) {
+        fprintf(stderr, "Error: --max-n must be between 0 and 5\n");
+        exit(EXIT_FAILURE);
+    }
+
     if (p.num_threads < 1) {
         fprintf(stderr, "Error: --threads must be >= 1\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (max_line_len < 1024) {
+        fprintf(stderr, "Error: --max-len must be >= 1024\n");
         exit(EXIT_FAILURE);
     }
 
@@ -461,7 +471,9 @@ static void process_barcode(BarcodeGroup *group, char **fwd_entry, char **fail_e
 
         *fwd_entry = build_fwd_entry(ext.barcode, group->bc, group->count,
                                      min_q, mean_q, 0.0, 0.0, seq, qual);
+        pthread_mutex_lock(&consensus_stats_mutex);
         total_barcodes++;
+        pthread_mutex_unlock(&consensus_stats_mutex);
         return;
     }
 
@@ -496,7 +508,9 @@ static void process_barcode(BarcodeGroup *group, char **fwd_entry, char **fail_e
             *fwd_entry = build_fwd_entry(ext.barcode, group->bc, group->count,
                                          min_q, mean_q, minor_mean, minor_max,
                                          fwd_seq, fwd_qual);
+            pthread_mutex_lock(&consensus_stats_mutex);
             total_barcodes++;
+            pthread_mutex_unlock(&consensus_stats_mutex);
         }
 
         free(fwd_seq);
@@ -552,7 +566,9 @@ static void process_barcode(BarcodeGroup *group, char **fwd_entry, char **fail_e
         *fwd_entry = build_fwd_entry(ext.barcode, group->bc, group->count,
                                      min_q, mean_q, minor_mean, minor_max,
                                      fwd_seq, fwd_qual);
+        pthread_mutex_lock(&consensus_stats_mutex);
         total_barcodes++;
+        pthread_mutex_unlock(&consensus_stats_mutex);
     }
 
     free(fwd_seq);
@@ -649,6 +665,7 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Consensus: threads=%d, no_alignment=%s\n",
             params.num_threads, params.no_alignment ? "yes" : "no");
     fprintf(stderr, "Chunk memory: %ld bytes\n", params.chunk_mem);
+    fprintf(stderr, "Max read length: %d\n", max_line_len);
     fprintf(stderr, "\n");
 
     /* Create temp directory */
@@ -678,7 +695,12 @@ int main(int argc, char *argv[]) {
     long reads_per_file[params.n_in];
     memset(reads_per_file, 0, sizeof(reads_per_file));
 
-    char hdr[MAX_LINE], seq[MAX_LINE], plus[MAX_LINE], qual[MAX_LINE];
+    /* FASTQ line buffers sized off --max-len (validated >= 1024 in parse_args) */
+    size_t line_buf_cap = (size_t)max_line_len + 1;
+    char *hdr  = xmalloc(line_buf_cap, "hdr buf");
+    char *seq  = xmalloc(line_buf_cap, "seq buf");
+    char *plus = xmalloc(line_buf_cap, "plus buf");
+    char *qual = xmalloc(line_buf_cap, "qual buf");
 
     for (int fi = 0; fi < params.n_in; fi++) {
         gz_reader_t *reader = gz_reader_open(params.in_files[fi]);
@@ -773,6 +795,10 @@ int main(int argc, char *argv[]) {
     long assigned_reads = 0;
     long fail_reads = 0;
 
+    /* Header buffer with room for ";UBID=<u64>" suffix */
+    size_t new_hdr_cap = line_buf_cap + 32;
+    char *new_hdr = xmalloc(new_hdr_cap, "new_hdr buf");
+
     for (int fi = 0; fi < params.n_in; fi++) {
         gz_reader_t *reader = gz_reader_open(params.in_files[fi]);
         while (read_fastq(reader, hdr, seq, plus, qual)) {
@@ -815,8 +841,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
-            char new_hdr[MAX_LINE + 32];
-            snprintf(new_hdr, MAX_LINE, "%s;UBID=%lu", hdr, (unsigned long)ubid);
+            snprintf(new_hdr, new_hdr_cap, "%s;UBID=%lu", hdr, (unsigned long)ubid);
 
             chunk_push(&cbuf, new_hdr, seq, plus, qual, ubid);
             assigned_reads++;
@@ -859,9 +884,14 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "  Failed/unmatched reads: %ld\n", fail_reads);
     fprintf(stderr, "  Chunks created: %d\n\n", n_chunks);
 
-    /* Free hash table and UBID map (no longer needed) */
+    /* Free hash table, UBID map, and per-line FASTQ buffers (no longer needed) */
     ht_free(&ht);
     free(ubid_map);
+    free(hdr);
+    free(seq);
+    free(plus);
+    free(qual);
+    free(new_hdr);
 
     /* ============================================================== */
     /*  Phase D: Merge + Consensus (combined)                         */

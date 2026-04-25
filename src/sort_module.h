@@ -12,11 +12,15 @@
 /*  Constants                                                         */
 /* ------------------------------------------------------------------ */
 
-#define MAX_LINE 65536
+#define DEFAULT_MAX_LINE_LEN 100000
 #define GZ_BUF_SIZE (1024 * 1024)
 #define HT_INITIAL_CAP (1 << 20)
 #define HT_LOAD_FACTOR 0.7
 #define MAX_BC_LEN 64
+
+/* Runtime FASTQ line cap. Defined by each main; read by sort_module
+   to size dynamic line buffers and to error on overflow. */
+extern int max_line_len;
 
 /* ------------------------------------------------------------------ */
 /*  Structures                                                        */
@@ -108,13 +112,17 @@ typedef struct {
     long  mem_used;
 } chunk_buffer_t;
 
-/* Merge stream for k-way merge */
+/* Merge stream for k-way merge. Buffers grown by getline() in stream_advance. */
 typedef struct {
     FILE    *fp;
-    char     hdr[MAX_LINE];
-    char     seq[MAX_LINE];
-    char     plus_line[MAX_LINE];
-    char     qual[MAX_LINE];
+    char    *hdr;
+    char    *seq;
+    char    *plus_line;
+    char    *qual;
+    size_t   hdr_cap;
+    size_t   seq_cap;
+    size_t   plus_cap;
+    size_t   qual_cap;
     uint64_t ubid;
     int      exhausted;
 } merge_stream_t;

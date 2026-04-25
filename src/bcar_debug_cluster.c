@@ -12,6 +12,9 @@
 
 #include "sort_module.h"
 
+/* Required by sort_module's read_fastq for buffer sizing */
+int max_line_len = DEFAULT_MAX_LINE_LEN;
+
 /* ------------------------------------------------------------------ */
 /*  Timing                                                            */
 /* ------------------------------------------------------------------ */
@@ -203,6 +206,11 @@ static params_t parse_args(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    if (p.max_n < 0 || p.max_n > 5) {
+        fprintf(stderr, "Error: --max-n must be between 0 and 5\n");
+        exit(EXIT_FAILURE);
+    }
+
     return p;
 }
 
@@ -311,7 +319,12 @@ int main(int argc, char *argv[]) {
     long n_with_n    = 0;
     long n_failed    = 0;
 
-    char hdr[MAX_LINE], seq[MAX_LINE], plus[MAX_LINE], qual[MAX_LINE];
+    /* FASTQ line buffers sized off max_line_len */
+    size_t line_buf_cap = (size_t)max_line_len + 1;
+    char *hdr  = xmalloc(line_buf_cap, "hdr buf");
+    char *seq  = xmalloc(line_buf_cap, "seq buf");
+    char *plus = xmalloc(line_buf_cap, "plus buf");
+    char *qual = xmalloc(line_buf_cap, "qual buf");
 
     for (int fi = 0; fi < params.n_in; fi++) {
         gz_reader_t *reader = gz_reader_open(params.in_files[fi]);
@@ -590,6 +603,10 @@ int main(int argc, char *argv[]) {
     free(pairs);
     ht_free(&ht);
     free(ubid_map);
+    free(hdr);
+    free(seq);
+    free(plus);
+    free(qual);
     fclose(log);
     for (int i = 0; i < params.n_in; i++) free(params.in_files[i]);
     free(params.in_files);

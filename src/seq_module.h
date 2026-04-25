@@ -2,6 +2,7 @@
 #define SEQ_MODULE_H
 
 #include <stdbool.h>
+#include <pthread.h>
 
 // Constants
 #define MAX_BARCODE_LEN 64
@@ -36,6 +37,9 @@ extern int max_line_len;
 extern double call_total;
 extern double call_missense;
 extern double call_indel;
+// Mutex protecting concurrent updates to the consensus stat counters above
+// (call_total/missense/indel) and to total_barcodes in the pipeline driver.
+extern pthread_mutex_t consensus_stats_mutex;
 // Seq module functions
 SeqArray seq_to_array(const char* seq, const char* qual, int length);
 void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out,

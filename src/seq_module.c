@@ -72,6 +72,12 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out,
     double max_f2 = 0.0;
     double sum_f2 = 0.0;
     int count_f2 = 0;
+    // Local accumulators — merged into the shared call_* globals under
+    // consensus_stats_mutex at the end of the function, to avoid per-position
+    // lock contention across worker threads.
+    double local_call_total = 0.0;
+    double local_call_missense = 0.0;
+    double local_call_indel = 0.0;
     *seq_out = malloc(array->length + 1);
     *qual_out = malloc(array->length + 1);
 
@@ -208,19 +214,26 @@ void array_to_seq(const SeqArray* array, char** seq_out, char** qual_out,
         }
         (*qual_out)[out_pos] = (char)(qual_int + 33);
 
-        // Update global error counters
+        // Update error counters (local; merged into globals below)
         for (int j = 0; j < 4; j++) {
-            call_total += pos->scores[j];
+            local_call_total += pos->scores[j];
             if (j != max_idx) {
-                call_missense += pos->scores[j];
+                local_call_missense += pos->scores[j];
             }
         }
         if (pos->scores[4] > 0) {
-            call_indel += pos->scores[4];
+            local_call_indel += pos->scores[4];
         }
 
         out_pos++;
     }
+
+    // Merge locals into shared globals under mutex
+    pthread_mutex_lock(&consensus_stats_mutex);
+    call_total    += local_call_total;
+    call_missense += local_call_missense;
+    call_indel    += local_call_indel;
+    pthread_mutex_unlock(&consensus_stats_mutex);
 
     // Terminate strings
     (*seq_out)[out_pos] = '\0';

@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "sort_module.h"
 #include <errno.h>
 
@@ -99,14 +100,26 @@ static int gz_fill(gz_reader_t *r) {
     return r->len > 0;
 }
 
-/* Read one line into dest (no newline). Returns 1 on success, 0 on EOF. */
+/* Read one line into dest (no newline). Returns 1 on success, 0 on EOF.
+   Aborts with a clear error if the line exceeds maxlen-1 bytes — this used
+   to silently truncate (gz path) or split records into garbage (file path). */
+static void overflow_fatal(int maxlen) {
+    fprintf(stderr,
+        "Fatal: FASTQ line exceeds buffer of %d bytes (--max-len=%d). "
+        "Increase --max-len to handle longer reads.\n",
+        maxlen - 1, maxlen - 1);
+    exit(EXIT_FAILURE);
+}
+
 int gz_getline(gz_reader_t *r, char *dest, int maxlen) {
     int out = 0;
     if (r->is_gz) {
+        int truncated = 0;
         while (1) {
             if (r->pos >= r->len) {
                 if (!gz_fill(r)) {
                     dest[out] = '\0';
+                    if (truncated) overflow_fatal(maxlen);
                     return out > 0;
                 }
             }
@@ -118,17 +131,25 @@ int gz_getline(gz_reader_t *r, char *dest, int maxlen) {
                 if (out + chunk < maxlen) {
                     memcpy(dest + out, start, chunk);
                     out += chunk;
+                } else {
+                    truncated = 1;
                 }
                 r->pos = (int)(nl - r->buf) + 1;
                 /* strip \r */
                 if (out > 0 && dest[out - 1] == '\r') out--;
                 dest[out] = '\0';
+                if (truncated) overflow_fatal(maxlen);
                 return 1;
             }
             int chunk = avail;
-            if (out + chunk >= maxlen) chunk = maxlen - out - 1;
-            memcpy(dest + out, start, chunk);
-            out += chunk;
+            if (out + chunk >= maxlen) {
+                chunk = maxlen - out - 1;
+                truncated = 1;
+            }
+            if (chunk > 0) {
+                memcpy(dest + out, start, chunk);
+                out += chunk;
+            }
             r->pos = r->len;
         }
     } else {
@@ -137,18 +158,29 @@ int gz_getline(gz_reader_t *r, char *dest, int maxlen) {
             return 0;
         }
         int len = (int)strlen(dest);
-        if (len > 0 && dest[len - 1] == '\n') dest[--len] = '\0';
+        if (len > 0 && dest[len - 1] == '\n') {
+            dest[--len] = '\0';
+        } else if (!feof(r->fp)) {
+            /* fgets stopped without reaching newline or EOF → buffer too small.
+               Drain the rest of the line so cleanup can report the error,
+               not a cascade of misaligned record reads. */
+            int ch;
+            while ((ch = fgetc(r->fp)) != EOF && ch != '\n') {}
+            overflow_fatal(maxlen);
+        }
         if (len > 0 && dest[len - 1] == '\r') dest[--len] = '\0';
         return 1;
     }
 }
 
-/* Read one FASTQ record. Returns 1 on success, 0 on EOF. */
+/* Read one FASTQ record. Returns 1 on success, 0 on EOF.
+   Caller-owned buffers must each be at least max_line_len + 1 bytes. */
 int read_fastq(gz_reader_t *r, char *hdr, char *seq, char *plus, char *qual) {
-    if (!gz_getline(r, hdr, MAX_LINE)) return 0;
-    if (!gz_getline(r, seq, MAX_LINE)) return 0;
-    if (!gz_getline(r, plus, MAX_LINE)) return 0;
-    if (!gz_getline(r, qual, MAX_LINE)) return 0;
+    int cap = max_line_len + 1;
+    if (!gz_getline(r, hdr, cap)) return 0;
+    if (!gz_getline(r, seq, cap)) return 0;
+    if (!gz_getline(r, plus, cap)) return 0;
+    if (!gz_getline(r, qual, cap)) return 0;
     return 1;
 }
 
@@ -1214,18 +1246,25 @@ static uint64_t parse_ubid_from_header(const char *hdr) {
 }
 
 static int stream_advance(merge_stream_t *ms) {
-    if (!fgets(ms->hdr, MAX_LINE, ms->fp))  { ms->exhausted = 1; return 0; }
-    if (!fgets(ms->seq, MAX_LINE, ms->fp))   { ms->exhausted = 1; return 0; }
-    if (!fgets(ms->plus_line, MAX_LINE, ms->fp)) { ms->exhausted = 1; return 0; }
-    if (!fgets(ms->qual, MAX_LINE, ms->fp))  { ms->exhausted = 1; return 0; }
+    if (getline(&ms->hdr,       &ms->hdr_cap,  ms->fp) < 0) { ms->exhausted = 1; return 0; }
+    if (getline(&ms->seq,       &ms->seq_cap,  ms->fp) < 0) { ms->exhausted = 1; return 0; }
+    if (getline(&ms->plus_line, &ms->plus_cap, ms->fp) < 0) { ms->exhausted = 1; return 0; }
+    if (getline(&ms->qual,      &ms->qual_cap, ms->fp) < 0) { ms->exhausted = 1; return 0; }
     /* Strip newlines */
     int l;
-    l = (int)strlen(ms->hdr); if (l > 0 && ms->hdr[l-1] == '\n') ms->hdr[--l] = '\0';
-    l = (int)strlen(ms->seq); if (l > 0 && ms->seq[l-1] == '\n') ms->seq[--l] = '\0';
+    l = (int)strlen(ms->hdr);       if (l > 0 && ms->hdr[l-1]       == '\n') ms->hdr[--l]       = '\0';
+    l = (int)strlen(ms->seq);       if (l > 0 && ms->seq[l-1]       == '\n') ms->seq[--l]       = '\0';
     l = (int)strlen(ms->plus_line); if (l > 0 && ms->plus_line[l-1] == '\n') ms->plus_line[--l] = '\0';
-    l = (int)strlen(ms->qual); if (l > 0 && ms->qual[l-1] == '\n') ms->qual[--l] = '\0';
+    l = (int)strlen(ms->qual);      if (l > 0 && ms->qual[l-1]      == '\n') ms->qual[--l]      = '\0';
     ms->ubid = parse_ubid_from_header(ms->hdr);
     return 1;
+}
+
+static void stream_free_buffers(merge_stream_t *ms) {
+    free(ms->hdr);       ms->hdr = NULL;       ms->hdr_cap = 0;
+    free(ms->seq);       ms->seq = NULL;       ms->seq_cap = 0;
+    free(ms->plus_line); ms->plus_line = NULL; ms->plus_cap = 0;
+    free(ms->qual);      ms->qual = NULL;      ms->qual_cap = 0;
 }
 
 /* Min-heap operations */
@@ -1312,8 +1351,10 @@ static void merge_batch(char **paths, int n_paths, const char *out_path) {
             fprintf(stderr, "  Merged %ld reads...\n", merged);
     }
 
-    for (int i = 0; i < n_paths; i++)
+    for (int i = 0; i < n_paths; i++) {
         fclose(streams[i].fp);
+        stream_free_buffers(&streams[i]);
+    }
     free(streams);
     heap_free(&heap);
     fclose(out);
@@ -1474,8 +1515,10 @@ static void merge_batch_with_callback(char **paths, int n_paths,
         free(grp_quals);
     }
 
-    for (int i = 0; i < n_paths; i++)
+    for (int i = 0; i < n_paths; i++) {
         fclose(streams[i].fp);
+        stream_free_buffers(&streams[i]);
+    }
     free(streams);
     heap_free(&heap);
 }
