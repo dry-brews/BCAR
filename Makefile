@@ -14,10 +14,11 @@ SRC_DIR = src
 
 # Output executables
 BCAR       = bcar
-BCAR_DEBUG = bcar_debug
+#BCAR_DEBUG = bcar_debug
 
 # Default target
-all: $(BCAR) $(BCAR_DEBUG)
+#all: $(BCAR) $(BCAR_DEBUG)
+all: $(BCAR)
 
 # Combined pipeline: sort + merge + consensus
 $(BCAR): $(SRC_DIR)/bcar_pipeline.c $(SRC_DIR)/sort_module.c $(SRC_DIR)/sort_module.h $(SRC_DIR)/seq_module.c $(SRC_DIR)/seq_module.h
