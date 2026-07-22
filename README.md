@@ -181,6 +181,6 @@ This project is licensed under the MIT License. See the `LICENSE` file for detai
 
 ---
 
-For further information, contact [Bryan Andrews](mailto:andrewsb@uchicago.edu).
+For further information, contact [Bryan Andrews](mailto:bryan.andrews.phd@gmail.com).
 
 
