@@ -1,6 +1,6 @@
 # BCAR: Barcode Collapse by Aligning Reads
 
-BCAR is a C/C++ tool designed to merge raw sequencing reads based on shared barcode identity.
+BCAR is a software tool designed to merge raw sequencing reads based on shared barcode identity.
 BCAR is designed to work on very large sequencing datasets that may not fit in memory.
 It will correct sequencing errors and produce a single consensus read for each barcode in your library.
 The Q-scores of the consensus are calculated from the quality scores of the input sequences.
@@ -8,7 +8,7 @@ The Q-scores of the consensus are calculated from the quality scores of the inpu
 On simulated reads, BCAR outperforms comparable tools like PacRAT and fgbio when indel errors are reasonably common.
 When sequencing errors (both indels and substitutions) are very rare, BCAR has similar performance compared to other tools.
 
-If you find this code helpful, please cite our pre-print: https://doi.org/10.64898/2026.03.27.714882
+If you find this code helpful, please cite our [paper](https://academic.oup.com/bioinformatics/advance-article/doi/10.1093/bioinformatics/btag557/8741837)
 
 ## Features
 - Automatically clusters barcodes to correct for read errors in the barcodes themselves
@@ -148,7 +148,7 @@ When you have only a single read mapped to a given barcode (bcid=90), BCAR will 
 Sometimes, you may see consensus read with a high count and good quality scores, but minor_frac_max is high.
 This may indicate that the barcode is associated with multiple variants in your library.
 However, minor_frac_max can be surprisingly high even on simulated reads where no barcode misassociation is expected.
-You should take high minor_frac_max values as an indication to look closer at your the possibility of barcode misassociation rather than a guarantee of such.
+You should take high minor_frac_max values as an indication to look closer at the possibility of barcode misassociation rather than a guarantee of such.
 
 You will likely want to filter your consensus reads before using them to characterize your library.
 How you do so is up to you, and the best way to do so depends on your experimental and sequencing strategies.
